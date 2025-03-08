@@ -4,21 +4,22 @@ type MessageType= int
 
 const (
 
+    ChunkSize = 400  // Chunk Size in bytes
 	// Client-ChunkServer Read Messages
-    ChunkServerReadRequestType  = iota
-    ChunkServerReadResponseType
+    ClientChunkServerReadRequestType  = iota
+    ClientChunkServerReadResponseType
 
 	// Client-ChunkServer Write Messages
-    ChunkServerWriteRequestType
-	ChunkServerWriteResponseType
+    ClientChunkServerWriteRequestType
+	ClientChunkServerWriteResponseType
 
 	// Client-MasterServer Read Messages
-	MasterReadRequestType
-	MasterReadResponseType
+	ClientMasterReadRequestType
+	ClientMasterReadResponseType
 
 	// Client-MasterServer Write Messages
-	MasterWriteRequestType
-	MasterWriteResponseType
+	ClientMasterWriteRequestType
+	ClientMasterWriteResponseType
 
 	// ChunkServer-MasterServer Messages
 	MasterChunkServerHandshakeType
@@ -28,7 +29,6 @@ const (
 )
 
 type MasterChunkServerHandshake struct{
-	Port string
 	ChunkIds []int64
 }
 
@@ -39,9 +39,13 @@ type MasterChunkServerHandshakeResponse struct{
 type MasterChunkServerHeartbeat struct{
 	Port string
 	ChunkIds []int64
+    LeaseExtensionRequests []int64
 }
-type MasterReadRequest struct {
-    MessageType MessageType // Capitalized field name
+
+type MasterChunkServerHeartbeatResponse struct{
+	ChunksToBeDeleted []int64
+}
+type ClientMasterReadRequest struct {
     Filename    string      // Capitalized field name
     Offset      int         // Capitalized field name
 }
@@ -51,37 +55,36 @@ type UnserializedResponse struct{
     ResponseBodyBytes []byte      // Capitalized field name
 }
 
-type MasterReadResponse struct{
+type  ClientMasterReadResponse struct{
     ChunkHandle int64    // Capitalized field name
     ChunkServers  []string // Capitalized field name
 }
 
-type MasterWriteRequest struct {
-    MessageType MessageType // Capitalized field name
+type  ClientMasterWriteRequest struct {
     Filename    string      // Capitalized field name
-    Offset      int         // Capitalized field name
-    Data        []byte      // Capitalized field name
+    LengthOfData        int64      // Capitalized field name
 }
 
-type MasterWriteResponse struct {
+type  ClientMasterWriteResponse struct {
     PrimaryChunkServer   string   // Capitalized field name
-    SecondaryChunkServer []string // Capitalized field name
+    SecondaryChunkServers []string // Capitalized field name
 }
 
-type ChunkServerReadRequest struct{
+type ClientChunkServerReadRequest struct{
     ChunkHandle int64 // Capitalized field name
     OffsetStart int64 // Capitalized field name
     OffsetEnd   int64 // Capitalized field name
 }
 
-type ChunkServerReadResponse struct{
+type  ClientChunkServerReadResponse struct{
     ResponseLength int32 // Capitalized field name
 }
 
-type ChunkServerWriteResponse struct{
+type ClientChunkServerWriteResponse struct{
     // Fields can be added here, if any, and they should also be capitalized
 }
 
-type ChunkServerWriteRequest struct{
-    // Fields can be added here, if any, and they should also be capitalized
+type ClientChunkServerWriteRequest struct{
+    ChunkId    int64      // Capitalized field name
+    Data        []byte      // Capitalized field name
 }

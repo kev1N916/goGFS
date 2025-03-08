@@ -3,52 +3,203 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/gob"
+	"log"
 	"net"
+	"os"
+	"sync"
 
+	"github.com/bwmarrin/snowflake"
 	"github.com/involk-secure-1609/goGFS/constants"
 )
 
+// Master represents the master server that manages files and chunk handlers
+type Master struct {
+	idGenerator  *snowflake.Node
+	port         string
+	leaseGrants  map[int64]string
+	fileMap      map[string][]Chunk // maps file names to array of chunkIds
+	chunkHandler map[int64][]string // maps chunkIds to the chunkServers which store those chunks
+	mu           sync.Mutex          // mutex for safe concurrent access to maps
+}
+type Chunk struct{
+	ChunkHandle int64
+	ChunkSize int64
+}
+// NewMaster creates and initializes a new Master instance
+func NewMaster(port string) *Master {
+	node,_:=snowflake.NewNode(1)
+	return &Master{
+		idGenerator:  node,
+		port:         port,
+		fileMap:      make(map[string][]Chunk),
+		chunkHandler: make(map[int64][]string),
+	}
+}
+func (master *Master) writeMasterReadResponse(conn net.Conn,chunkServers []string,chunkHandle int64){
+	handshakeResponse:=constants.ClientMasterReadResponse{
+		ChunkHandle: chunkHandle,
+		ChunkServers: chunkServers,
+	}
+	// Encode using gob
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(handshakeResponse)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
+	responseBytes := buf.Bytes()
+	lengthOfRequest:=len(responseBytes)
+
+	readResponseInBytes := make([]byte, 0)
+	readResponseInBytes = append(readResponseInBytes, byte(constants.ClientMasterReadResponseType))
+	binary.LittleEndian.AppendUint16(readResponseInBytes,uint16(lengthOfRequest))
+	readResponseInBytes=append(readResponseInBytes,responseBytes...)
+	
+	conn.Write(readResponseInBytes)
+
+}
 
 func (master *Master) handleMasterReadRequest(conn net.Conn,requestBodyBytes []byte){
+	var response constants.ClientMasterReadRequest
+	responseReader := bytes.NewReader(requestBodyBytes)
+	decoder := gob.NewDecoder(responseReader)
+	err := decoder.Decode(&response)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
 
+
+	fileInfo, err := os.Stat(response.Filename)
+	if err != nil {
+		log.Println("Error getting file info:", err)
+		return
+	}
+
+	log.Println("File Name:", fileInfo.Name())
+	log.Println("Size (bytes):", fileInfo.Size())
+	chunkOffset:=fileInfo.Size()/constants.ChunkSize
+	chunk:=master.fileMap[response.Filename][chunkOffset]
+	chunkServers:=master.chunkHandler[chunk.ChunkHandle]
+	master.writeMasterReadResponse(conn,chunkServers,chunk.ChunkHandle)
+}
+
+func (master *Master) chooseSecondaryServers(chunkHandle int64){
+	
+}
+
+func (master *Master) generateNewChunkId(file string) int64{
+	id:=master.idGenerator.Generate()
+	return id.Int64()
 }
 
 func (master *Master) handleMasterWriteRequest(conn net.Conn,requestBodyBytes []byte){
+	var response constants.ClientMasterWriteRequest
+	responseReader := bytes.NewReader(requestBodyBytes)
+	decoder := gob.NewDecoder(responseReader)
+	err := decoder.Decode(&response)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
+
+	chunkId:=master.generateNewChunkId(response.Filename)
 
 }
 
-func (master *Master) handleMasterHeartbeat(conn net.Conn,requestBodyBytes []byte){
+func (master *Master) writeMasterWriteResponse(conn net.Conn,requestBodyBytes []byte){
 
+}
+
+func (master *Master) writeHandshakeResponse(conn net.Conn){
+	handshakeResponse:=constants.MasterChunkServerHandshakeResponse{
+		Message: "Handshake successful",
+	}
+	// Encode using gob
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(handshakeResponse)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
+	responseBytes := buf.Bytes()
+	lengthOfRequest:=len(responseBytes)
+
+	handshakeResponseInBytes := make([]byte, 0)
+	handshakeResponseInBytes = append(handshakeResponseInBytes, byte(constants.MasterChunkServerHandshakeResponseType))
+	binary.LittleEndian.AppendUint16(handshakeResponseInBytes,uint16(lengthOfRequest))
+	handshakeResponseInBytes=append(handshakeResponseInBytes,responseBytes...)
+	
+	conn.Write(handshakeResponseInBytes)
+
+}
+func (master *Master) writeHeartbeatResponse(conn net.Conn,chunksToBeDeleted[]int64){
+	heartbeatResponse := constants.MasterChunkServerHeartbeatResponse{
+		ChunksToBeDeleted: chunksToBeDeleted,
+	}
+
+	// Encode using gob
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(heartbeatResponse)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
+
+	responseBytes := buf.Bytes()
+	lengthOfRequest := len(responseBytes)
+
+	// Construct final response
+	heartbeatResponseInBytes := make([]byte, 0)
+	heartbeatResponseInBytes = append(heartbeatResponseInBytes, byte(constants.MasterChunkServerHeartbeatResponseType))
+	heartbeatResponseInBytes = binary.LittleEndian.AppendUint16(heartbeatResponseInBytes, uint16(lengthOfRequest))
+	heartbeatResponseInBytes = append(heartbeatResponseInBytes, responseBytes...)
+	
+	conn.Write(heartbeatResponseInBytes)
+
+}
+func (master *Master) handleMasterHeartbeat(conn net.Conn,requestBodyBytes []byte){
+	var response constants.MasterChunkServerHeartbeat
+	responseReader := bytes.NewReader(requestBodyBytes)
+	decoder := gob.NewDecoder(responseReader)
+	err := decoder.Decode(&response)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
+	chunksToBeDeleted:=make([]int64,0)
+	for _,chunkId :=range(response.ChunkIds){
+		_,presentOnMaster:=master.chunkHandler[chunkId];
+		if !presentOnMaster{
+			chunksToBeDeleted = append(chunksToBeDeleted, chunkId)
+		}
+	}
+
+	for _,leaseRequest:=range(response.LeaseExtensionRequests){
+		master.leaseGrants[leaseRequest]=conn.RemoteAddr().String()
+	}
+
+	master.writeHeartbeatResponse(conn,chunksToBeDeleted)
 
 }
 
 func (master *Master) handleMasterHandshake(conn net.Conn,requestBodyBytes []byte){
 	var response constants.MasterChunkServerHandshake
 	responseReader := bytes.NewReader(requestBodyBytes)
-	deserializeErr := binary.Read(responseReader, binary.LittleEndian, &response)
-	if deserializeErr != nil {
+	decoder:=gob.NewDecoder(responseReader)
+	err := decoder.Decode(&response)
+	if err != nil {
+		log.Println("Encoding failed:", err)
 		return
 	}
-
 	for _,chunkId :=range(response.ChunkIds){
-		master.chunkHandler[chunkId]=append(master.chunkHandler[chunkId],response.Port)
+		master.chunkHandler[chunkId]=append(master.chunkHandler[chunkId],conn.RemoteAddr().String())
 	}
 
-	handshakeResponse:=constants.MasterChunkServerHandshakeResponse{
-		Message: "Handshake successful",
-	}
-	handshakeResponseInBytes:=make([]byte,0)
-	handshakeResponseInBytes=append(handshakeResponseInBytes,byte(constants.MasterChunkServerHandshakeResponseType))
-	var buf bytes.Buffer
-	err := binary.Write(&buf, binary.LittleEndian, handshakeResponse) // Choose endianness
-	if err != nil {
-		return 
-	}
-	responseBytes := buf.Bytes()
-	lengthOfRequest:=len(responseBytes)
-	binary.LittleEndian.AppendUint16(handshakeResponseInBytes,uint16(lengthOfRequest))
-	handshakeResponseInBytes=append(handshakeResponseInBytes,responseBytes...)
-	
-	conn.Write(handshakeResponseInBytes)
+	master.writeHandshakeResponse(conn)
 
 }

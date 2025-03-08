@@ -6,27 +6,10 @@ import (
 	"io"
 	"log"
 	"net"
-	"sync"
 
 	"github.com/involk-secure-1609/goGFS/constants"
 )
 
-// Master represents the master server that manages files and chunk handlers
-type Master struct {
-	port         string
-	fileMap      map[string][]int64 // maps file names to array of chunkIds
-	chunkHandler map[int64][]string // maps chunkIds to the chunkServers which store those chunks
-	mu           sync.Mutex          // mutex for safe concurrent access to maps
-}
-
-// NewMaster creates and initializes a new Master instance
-func NewMaster(port string) *Master {
-	return &Master{
-		port:         port,
-		fileMap:      make(map[string][]int64),
-		chunkHandler: make(map[int64][]string),
-	}
-}
 
 // Main initializes and starts the master server
 func main() {
@@ -60,8 +43,8 @@ func (master *Master)handleConnection(conn net.Conn) {
 	
 	for {
 		// Read the request type (1 byte)
-		requestType := make([]byte, 1)
-		n, err := conn.Read(requestType)
+		messageType := make([]byte, 1)
+		n, err := conn.Read(messageType)
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Connection closed by client")
@@ -75,15 +58,15 @@ func (master *Master)handleConnection(conn net.Conn) {
 		}
 		
 		// Read the request length (2 bytes)
-		requestLength := make([]byte, 2)
-		_, err = io.ReadFull(conn, requestLength)
+		messageLength := make([]byte, 2)
+		_, err = io.ReadFull(conn, messageLength)
 		if err != nil {
 			log.Println("Error reading request length:", err)
 			return
 		}
 		
 		// Get the length as uint16
-		length := binary.LittleEndian.Uint16(requestLength)
+		length := binary.LittleEndian.Uint16(messageLength)
 		
 		// Read the request body
 		requestBodyBytes := make([]byte, length)
@@ -94,13 +77,13 @@ func (master *Master)handleConnection(conn net.Conn) {
 		}
 		
 		// Process the request based on type
-		switch int(requestType[0]) {
-		case constants.MasterReadRequestType:
+		switch constants.MessageType(messageType[0]) {
+		case constants.ClientMasterReadRequestType:
 			log.Println("Received MasterReadRequestType")
 			// Process read request
 			master.handleMasterReadRequest(conn, requestBodyBytes)
 			
-		case constants.MasterWriteRequestType:
+		case constants.ClientMasterWriteRequestType:
 			log.Println("Received MasterWriteRequestType")
 			// Process write request
 			master.handleMasterWriteRequest(conn, requestBodyBytes)
@@ -115,7 +98,7 @@ func (master *Master)handleConnection(conn net.Conn) {
 			master.handleMasterHeartbeat(conn, requestBodyBytes)
 			
 		default:
-			log.Println("Received unknown request type:", requestType[0])
+			log.Println("Received unknown request type:", messageType[0])
 		}
 	}
 }

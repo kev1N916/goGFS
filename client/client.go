@@ -43,9 +43,9 @@ func (client *Client) readGenericResponse(conn net.Conn) (*constants.Unserialize
 
 	return &constants.UnserializedResponse{MessageType:constants.MessageType(responseMessageType),ResponseBodyBytes: responseBodyBytes},nil
 }
-func serializeChunkServerReadRequest(chunkServerReadRequest *constants.ChunkServerReadRequest) ([]byte,error){
+func serializeChunkServerReadRequest(chunkServerReadRequest *constants.ClientChunkServerReadRequest) ([]byte,error){
 	readRequestInBytes:=make([]byte,0)
-	readRequestInBytes=append(readRequestInBytes,byte(constants.ChunkServerReadRequestType))
+	readRequestInBytes=append(readRequestInBytes,byte(constants.ClientChunkServerReadRequestType))
 	var buf bytes.Buffer
 	err := binary.Write(&buf, binary.LittleEndian, chunkServerReadRequest) // Choose endianness
 	if err != nil {
@@ -59,9 +59,9 @@ func serializeChunkServerReadRequest(chunkServerReadRequest *constants.ChunkServ
 }
 
 
-func serializeMasterReadRequest(masterReadRequest *constants.MasterReadRequest) ([]byte,error){
+func serializeMasterReadRequest(masterReadRequest *constants.ClientMasterReadRequest) ([]byte,error){
 	readRequestInBytes:=make([]byte,0)
-	readRequestInBytes=append(readRequestInBytes,byte(constants.MasterReadRequestType))
+	readRequestInBytes=append(readRequestInBytes,byte(constants.ClientMasterReadRequestType))
 	var buf bytes.Buffer
 	err := binary.Write(&buf, binary.LittleEndian, masterReadRequest) // Choose endianness
 	if err != nil {
@@ -74,7 +74,7 @@ func serializeMasterReadRequest(masterReadRequest *constants.MasterReadRequest) 
 	return readRequestInBytes,nil
 }
 
-func (client *Client) readFromMasterServer(readRequest constants.MasterReadRequest) (*constants.MasterReadResponse,error){
+func (client *Client) readFromMasterServer(readRequest constants.ClientMasterReadRequest) (*constants.ClientMasterReadResponse,error){
 
 	conn, dialErr := net.Dial("tcp", client.masterServer)
 	if dialErr != nil {
@@ -98,7 +98,7 @@ func (client *Client) readFromMasterServer(readRequest constants.MasterReadReque
 		return nil,err
 	}
 	// To reconstruct (deserialize):
-	var response constants.MasterReadResponse
+	var response constants.ClientMasterReadResponse
 	responseReader := bytes.NewReader(unserializedResponse.ResponseBodyBytes)
 	deserializeErr := binary.Read(responseReader, binary.LittleEndian, &response)
 	if deserializeErr != nil {
@@ -111,11 +111,11 @@ func (client *Client) readFromMasterServer(readRequest constants.MasterReadReque
 }
 
 
-func (client *Client) cacheChunkServers(fileName string,readResponse *constants.MasterReadResponse){
+func (client *Client) cacheChunkServers(fileName string,readResponse *constants.ClientMasterReadResponse){
 	client.chunkCache[fileName]=readResponse.ChunkServers
 }
 
-func (client *Client) readFromChunkServer(offsetStart int64,offsetEnd int64,readResponse *constants.MasterReadResponse)(error){
+func (client *Client) readFromChunkServer(offsetStart int64,offsetEnd int64,readResponse *constants.ClientMasterReadResponse)(error){
 	for _,chunkServer:=range readResponse.ChunkServers{
 		conn, dialErr := net.Dial("tcp", chunkServer)
 		if dialErr != nil {
@@ -124,7 +124,7 @@ func (client *Client) readFromChunkServer(offsetStart int64,offsetEnd int64,read
 		}
 		defer conn.Close() // Ensure connection is closed when function exits
 
-		chunkServerReadRequest:=constants.ChunkServerReadRequest{
+		chunkServerReadRequest:=constants.ClientChunkServerReadRequest{
 			ChunkHandle: readResponse.ChunkHandle,
 			OffsetStart: offsetStart,
 			OffsetEnd: offsetEnd,
@@ -148,7 +148,7 @@ func (client *Client) readFromChunkServer(offsetStart int64,offsetEnd int64,read
 		return err
 	}
 	
-	var response constants.ChunkServerReadResponse
+	var response constants.ClientChunkServerReadResponse
 	responseReader := bytes.NewReader(unserializedResponse.ResponseBodyBytes)
 	deserializeErr := binary.Read(responseReader, binary.LittleEndian, &response)
 	if deserializeErr != nil {
@@ -164,7 +164,7 @@ func (client *Client) readFromChunkServer(offsetStart int64,offsetEnd int64,read
 }
 func (client *Client) read(filename string, offset int) error {
 
-	masterReadRequest := constants.MasterReadRequest{
+	masterReadRequest := constants.ClientMasterReadRequest{
 		Filename: filename,
 		Offset:   offset,
 	}
