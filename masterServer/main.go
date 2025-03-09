@@ -15,7 +15,10 @@ import (
 func main() {
 	masterPort := "8080"
 	// Initialize master server
-	master := NewMaster(masterPort)
+	master,err := NewMaster(masterPort)
+	if err!=nil{
+		panic(err)
+	}
 	log.Printf("Master server listening on :%s", master.port)
 	// Start master server
 	listener, err := net.Listen("tcp", ":"+masterPort)

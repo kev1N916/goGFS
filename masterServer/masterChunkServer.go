@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/snowflake"
 	"github.com/involk-secure-1609/goGFS/constants"
@@ -15,26 +16,37 @@ import (
 
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
+	lastCheckpointTime time.Time
+	lastLogSwitchTime time.Time
+	currentOpLog *os.File
+	serverList ServerList
 	idGenerator  *snowflake.Node
 	port         string
 	leaseGrants  map[int64]string
 	fileMap      map[string][]Chunk // maps file names to array of chunkIds
 	chunkHandler map[int64][]string // maps chunkIds to the chunkServers which store those chunks
-	mu           sync.Mutex          // mutex for safe concurrent access to maps
+	mu           sync.Mutex          
+	opLogMu   sync.Mutex
 }
 type Chunk struct{
 	ChunkHandle int64
 	ChunkSize int64
 }
 // NewMaster creates and initializes a new Master instance
-func NewMaster(port string) *Master {
+func NewMaster(port string) (*Master,error) {
 	node,_:=snowflake.NewNode(1)
+	opLogFile, err := os.OpenFile("opLog.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    if err != nil {
+        return nil,err
+    }
 	return &Master{
+		currentOpLog: opLogFile,
+		serverList: make(ServerList,0),
 		idGenerator:  node,
 		port:         port,
 		fileMap:      make(map[string][]Chunk),
 		chunkHandler: make(map[int64][]string),
-	}
+	},nil
 }
 func (master *Master) writeMasterReadResponse(conn net.Conn,chunkServers []string,chunkHandle int64){
 	handshakeResponse:=constants.ClientMasterReadResponse{
@@ -86,11 +98,18 @@ func (master *Master) handleMasterReadRequest(conn net.Conn,requestBodyBytes []b
 	master.writeMasterReadResponse(conn,chunkServers,chunk.ChunkHandle)
 }
 
-func (master *Master) chooseSecondaryServers(chunkHandle int64){
-	
+func (master *Master) chooseSecondaryServers()[]string{
+	servers:=make([]string,0)
+	for i:=range 3 {
+		server := master.serverList[i]
+		servers=append(servers,server.server)
+		master.serverList.update(server, server.NumberOfChunks+1)
+	}
+
+	return servers
 }
 
-func (master *Master) generateNewChunkId(file string) int64{
+func (master *Master) generateNewChunkId() int64{
 	id:=master.idGenerator.Generate()
 	return id.Int64()
 }
@@ -105,12 +124,56 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn,requestBodyBytes []
 		return
 	}
 
-	chunkId:=master.generateNewChunkId(response.Filename)
+	opsToLog:=make([]FileChunkMapping,0)
 
+	_,fileAlreadyExists:=master.fileMap[response.Filename]
+	if !fileAlreadyExists{
+		master.fileMap[response.Filename]=make([]Chunk,0)
+		chunk:=Chunk{
+			ChunkHandle: master.generateNewChunkId(),
+			ChunkSize: response.LengthOfData,
+		}
+		opsToLog=append(opsToLog,FileChunkMapping{
+			File: response.Filename,
+			ChunkHandle: chunk.ChunkHandle,
+		})
+		master.fileMap[response.Filename]=append(master.fileMap[response.Filename],chunk)
+	}
+	chunkHandle:=master.fileMap[response.Filename][len(master.fileMap[response.Filename])-1].ChunkHandle
+	_,chunkServerExists:=master.chunkHandler[chunkHandle]
+	if !chunkServerExists{
+		master.chunkHandler[chunkHandle]=master.chooseSecondaryServers()
+	}
+	err=master.writeToOpLog(opsToLog)
+	if err!=nil{
+
+	}
+	master.writeMasterWriteResponse(conn,chunkHandle)
 }
 
-func (master *Master) writeMasterWriteResponse(conn net.Conn,requestBodyBytes []byte){
+func (master *Master) writeMasterWriteResponse(conn net.Conn,chunkHandle int64){
+	writeResponse:=constants.ClientMasterWriteResponse{
+		PrimaryChunkServer: master.chunkHandler[chunkHandle][0],
+		SecondaryChunkServers: master.chunkHandler[chunkHandle][1:],
+	}
+	// Encode using gob
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(writeResponse)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return
+	}
 
+	responseBytes := buf.Bytes()
+	lengthOfRequest:=len(responseBytes)
+
+	writeResponseInBytes := make([]byte, 0)
+	writeResponseInBytes = append(writeResponseInBytes, byte(constants.ClientMasterWriteResponseType))
+	binary.LittleEndian.AppendUint16(writeResponseInBytes,uint16(lengthOfRequest))
+	writeResponseInBytes=append(writeResponseInBytes,responseBytes...)
+	
+	conn.Write(writeResponseInBytes)
 }
 
 func (master *Master) writeHandshakeResponse(conn net.Conn){
