@@ -6,6 +6,7 @@ const (
 
     ChunkSize = 400  // Chunk Size in bytes
 	// Client-ChunkServer Read Messages
+    
     ClientChunkServerReadRequestType  = iota
     ClientChunkServerReadResponseType
 
@@ -62,10 +63,11 @@ type  ClientMasterReadResponse struct{
 
 type  ClientMasterWriteRequest struct {
     Filename    string      // Capitalized field name
-    LengthOfData        int64      // Capitalized field name
 }
 
 type  ClientMasterWriteResponse struct {
+    ChunkHandle int64
+    MutationId int64
     PrimaryChunkServer   string   // Capitalized field name
     SecondaryChunkServers []string // Capitalized field name
 }
@@ -76,6 +78,10 @@ type ClientChunkServerReadRequest struct{
     OffsetEnd   int64 // Capitalized field name
 }
 
+type PrimaryChunkCommitRequest struct {
+    ChunkId       int64    // ID of the chunk to commit
+    MutationId    int64    // ID of the mutation
+}
 type  ClientChunkServerReadResponse struct{
     ResponseLength int32 // Capitalized field name
 }

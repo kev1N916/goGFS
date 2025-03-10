@@ -125,13 +125,13 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn,requestBodyBytes []
 	}
 
 	opsToLog:=make([]FileChunkMapping,0)
-
+	master.mu.Lock()
 	_,fileAlreadyExists:=master.fileMap[response.Filename]
 	if !fileAlreadyExists{
 		master.fileMap[response.Filename]=make([]Chunk,0)
 		chunk:=Chunk{
 			ChunkHandle: master.generateNewChunkId(),
-			ChunkSize: response.LengthOfData,
+			ChunkSize: 0,
 		}
 		opsToLog=append(opsToLog,FileChunkMapping{
 			File: response.Filename,
@@ -144,15 +144,18 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn,requestBodyBytes []
 	if !chunkServerExists{
 		master.chunkHandler[chunkHandle]=master.chooseSecondaryServers()
 	}
+	master.mu.Unlock()
 	err=master.writeToOpLog(opsToLog)
 	if err!=nil{
-
+		return
 	}
 	master.writeMasterWriteResponse(conn,chunkHandle)
 }
 
 func (master *Master) writeMasterWriteResponse(conn net.Conn,chunkHandle int64){
 	writeResponse:=constants.ClientMasterWriteResponse{
+		C: chunkHandle,
+		MutationId: master.idGenerator.Generate().Int64(),
 		PrimaryChunkServer: master.chunkHandler[chunkHandle][0],
 		SecondaryChunkServers: master.chunkHandler[chunkHandle][1:],
 	}

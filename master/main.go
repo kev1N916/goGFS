@@ -11,17 +11,9 @@ import (
 )
 
 
-// Main initializes and starts the master server
-func main() {
-	masterPort := "8080"
-	// Initialize master server
-	master,err := NewMaster(masterPort)
-	if err!=nil{
-		panic(err)
-	}
-	log.Printf("Master server listening on :%s", master.port)
+func (master *Master) start() error{
 	// Start master server
-	listener, err := net.Listen("tcp", ":"+masterPort)
+	listener, err := net.Listen("tcp", ":"+master.port)
 	if err != nil {
 		log.Fatalf("Failed to start master server: %v", err)
 	}
@@ -42,7 +34,6 @@ func main() {
 
 func (master *Master)handleConnection(conn net.Conn) {
 	defer conn.Close()
-	
 	
 	for {
 		// Read the request type (1 byte)
