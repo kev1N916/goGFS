@@ -154,7 +154,7 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn,requestBodyBytes []
 
 func (master *Master) writeMasterWriteResponse(conn net.Conn,chunkHandle int64){
 	writeResponse:=constants.ClientMasterWriteResponse{
-		C: chunkHandle,
+		ChunkHandle: chunkHandle,
 		MutationId: master.idGenerator.Generate().Int64(),
 		PrimaryChunkServer: master.chunkHandler[chunkHandle][0],
 		SecondaryChunkServers: master.chunkHandler[chunkHandle][1:],

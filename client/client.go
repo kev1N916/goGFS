@@ -86,7 +86,7 @@ func (client *Client) readGenericResponse(conn net.Conn) (*constants.Unserialize
 // }
 
 // SerializeMessage serializes any message type into bytes
-func serializeMessage(msgType constants.MessageType, msg interface{}) ([]byte, error) {
+func serializeMessage(msgType constants.MessageType, msg any) ([]byte, error) {
     // Initialize byte slice with message type
     serialized := make([]byte, 1)
     serialized[0] = byte(msgType)
@@ -149,6 +149,8 @@ func (client *Client) readFromMasterServer(readRequest constants.ClientMasterRea
 }
 
 func (client *Client) cacheChunkServers(fileName string, readResponse *constants.ClientMasterReadResponse) {
+	client.clientMu.Lock()
+	defer client.clientMu.Unlock()
 	client.chunkCache[fileName] = readResponse.ChunkServers
 }
 
@@ -214,7 +216,7 @@ func (client *Client) readFromChunkServer(offsetStart int64, offsetEnd int64, re
 	return fmt.Errorf("failed to read from any chunk server")
 }
 
-func (client *Client) writeFromMasterServer(request constants.ClientMasterWriteRequest) (*constants.ClientMasterWriteResponse ,error){
+func (client *Client) writeToMasterServer(request constants.ClientMasterWriteRequest) (*constants.ClientMasterWriteResponse ,error){
 
 	conn, err := net.Dial("tcp", client.masterServer)
 	if err != nil {
@@ -279,12 +281,7 @@ func (client *Client) writeChunkToSingleServer(chunkServerPort string, data []by
             }
             defer conn.Close()
             
-            // Send data size first (8 bytes, little endian)
-            sizeBuf := make([]byte, 8)
-            binary.LittleEndian.PutUint64(sizeBuf, uint64(len(data)))
-            if _, err = conn.Write(sizeBuf); err != nil {
-                return fmt.Errorf("failed to send data size: %w", err)
-            }
+          
             
             // Send the actual data
             _, err = io.Copy(conn, bytes.NewReader(data))
@@ -354,35 +351,38 @@ func (client *Client) replicateChunkToAllServers(writeResponse constants.ClientM
 
 }
 
-func (client *Client) commitChunkToPrimary(port string) error{
+func (client *Client) sendWriteRequestToPrimary(port string,writeRequestToPrimary constants.PrimaryChunkCommitRequest) error{
 	conn, err := net.Dial("tcp", port)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	
-	var bytes bytes.Buffer
-	encoder := gob.NewEncoder(&bytes)
-	err = encoder.Encode(constants.PrimaryChunkCommitRequest{
+	messageBytes,err:=serializeMessage(constants.PrimaryChunkCommitRequestType,writeRequestToPrimary)
+	if err!=nil{
+		return err
+	}
+	_,err=conn.Write(messageBytes)
+	if err!=nil{
+		return err
+	}
 
-	})
-	// Send commit message
-	_, err = conn.Write([]byte{1})
-	if err != nil {
+	response,err:=client.readGenericResponse(conn)
+	if err!=nil{
 		return err
 	}
-	
-	// Read acknowledgment
-	ack := make([]byte, 1)
-	_, err = conn.Read(ack)
-	if err != nil {
+	if response.MessageType!=constants.PrimaryChunkCommitResponseType{
+		return fmt.Errorf("expected response type %d but got %d",constants.PrimaryChunkCommitResponseType,response.MessageType)
+	}
+	var responseBody constants.PrimaryChunkCommitResponse
+	decoder:=gob.NewDecoder(bytes.NewReader(response.ResponseBodyBytes))
+	err=decoder.Decode(&responseBody)
+	if err!=nil{
 		return err
 	}
-	
-	if ack[0] != 1 {
-		return fmt.Errorf("commit failed with error code %d", ack[0])
+	if !responseBody.Status{
+		return fmt.Errorf("primary chunk commit failed")
 	}
-	
 	return nil
 
 }
@@ -392,7 +392,7 @@ func (client *Client) write(filename string,data []byte) error {
 		Filename: filename,
 	}
 
-	writeResponse,err:=client.writeFromMasterServer(masterWriteRequest)
+	writeResponse,err:=client.writeToMasterServer(masterWriteRequest)
 	if err != nil {
 		return err
 	}
@@ -402,13 +402,15 @@ func (client *Client) write(filename string,data []byte) error {
 		return err
 	}
 
-	err=client.commitChunkToPrimary(writeResponse.PrimaryChunkServer)
+	writeRequestToPrimary := constants.PrimaryChunkCommitRequest{
+		ChunkHandle: writeResponse.ChunkHandle,
+		MutationId: writeResponse.MutationId,
+		SecondaryServers: writeResponse.SecondaryChunkServers,
+	}
+	err=client.sendWriteRequestToPrimary(writeResponse.PrimaryChunkServer,writeRequestToPrimary)
 	if err!=nil{
 		return err
 	}
-
-
-
 	
 	return nil
 }
