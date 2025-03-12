@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
 	"errors"
 	"io"
 	"log"
@@ -13,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/involk-secure-1609/goGFS/constants"
+	constants "github.com/involk-secure-1609/goGFS/common"
+	"github.com/involk-secure-1609/goGFS/helper"
 	lrucache "github.com/involk-secure-1609/goGFS/lruCache"
 )
 
@@ -91,10 +91,9 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 
 // processCommitBatch handles a batch of commit requests
 func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
-	chunkServer.chunkServerMu.Lock()
 
 	log.Printf("Processing batch of %d commit requests", len(requests))
-
+	chunkServer.chunkServerMu.Lock()
 	// Group requests by chunk ID for more efficient processing
 	chunkBatches := make(map[int64][]CommitRequest)
 	for _, req := range requests {
@@ -102,15 +101,17 @@ func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 	}
 	chunkServer.chunkServerMu.Unlock()
 
-	for key,value:=range(chunkBatches){
-		go chunkServer.handleChunkCommit(key,value)
+	for key, value := range chunkBatches {
+		go chunkServer.handleChunkCommit(key, value)
 	}
 }
 
+func (chunkServer *ChunkServer) handleChunkCommit(chunkHandle int64, requests []CommitRequest) error {
+	response := constants.PrimaryChunkCommitResponse{
+		Status: true,
+	}
 
-func (chunkServer *ChunkServer) handleChunkCommit(chunkHandle int64,requests []CommitRequest) error{
-	
-	file, err := os.OpenFile(strconv.FormatInt(chunkHandle, 10) + ".chunk",os.O_CREATE|os.O_WRONLY, 0666)
+	file, err := os.OpenFile(strconv.FormatInt(chunkHandle, 10)+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		return err
 	}
@@ -122,48 +123,65 @@ func (chunkServer *ChunkServer) handleChunkCommit(chunkHandle int64,requests []C
 		return err
 	}
 
-	errorOnPrimary:=false
-	for _,value:=range(requests){
-		err=chunkServer.mutateChunk(file,value.commitRequest.MutationId)
-		if err!=nil{
-			errorOnPrimary=true
+	errorOnPrimary := false
+	for _, value := range requests {
+		err = chunkServer.mutateChunk(file, value.commitRequest.MutationId, -1)
+		if err != nil {
+			errorOnPrimary = true
 			break
 		}
 	}
-	if errorOnPrimary{
-
+	if errorOnPrimary {
+		response.Status = false
 	}
 
-	mutationOrder:=make([]int64,0)
-	for _,value:=range(requests){
+	mutationOrder := make([]int64, 0)
+	for _, value := range requests {
 		mutationOrder = append(mutationOrder, value.commitRequest.MutationId)
 	}
 
-	interChunkServerCommitRequest:=constants.InterChunkServerCommitRequest{
-		ChunkHandle: chunkHandle,
-		ChunkOffset: offset,
+	interChunkServerCommitRequest := constants.InterChunkServerCommitRequest{
+		ChunkHandle:   chunkHandle,
+		ChunkOffset:   offset,
 		MutationOrder: mutationOrder,
 	}
-	errorOnSecondary:=false
+	errorOnSecondary := false
 
-	for _,value:=range(requests){
-		err:=chunkServer.writeInterChunkServerCommitRequest(value.conn,interChunkServerCommitRequest)
-		if err!=nil{
-			errorOnSecondary=true
+	for _, value := range requests {
+		err := chunkServer.writeInterChunkServerCommitRequest(value.conn, interChunkServerCommitRequest)
+		if err != nil {
+			errorOnSecondary = true
 		}
-	} 
+	}
 
-	if errorOnSecondary{
+	if errorOnSecondary {
+		response.Status = false
+	}
 
+	// var buf bytes.Buffer
+	// encoder := gob.NewEncoder(&buf)
+	// encoder.Encode(response)
+
+	// lengthOfRequest := len(buf.Bytes())
+	// requestBytes := make([]byte, 0)
+	// requestBytes = append(requestBytes, byte(constants.InterChunkServerCommitResponseType))
+	// requestBytes = binary.LittleEndian.AppendUint16(requestBytes, uint16(lengthOfRequest))
+	// requestBytes = append(requestBytes, buf.Bytes()...)
+
+	requestBytes, err := helper.EncodeMessage(constants.InterChunkServerCommitResponseType, response)
+	if err != nil {
+		return err
+	}
+
+	for _, value := range requests {
+		value.conn.Write(requestBytes)
 	}
 
 	return nil
 
-
 }
 
-
-func (chunkServer *ChunkServer) start() {
+func (chunkServer *ChunkServer) Start() {
 	// Start chunk server
 	listener, err := net.Listen("tcp", ":8081")
 	if err != nil {
@@ -193,17 +211,21 @@ func (chunkServer *ChunkServer) initiateHandshake() error {
 	handshakeBody := constants.MasterChunkServerHandshake{
 		ChunkIds: chunkServer.chunkIds,
 	}
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	encoder.Encode(handshakeBody)
+	// var buf bytes.Buffer
+	// encoder := gob.NewEncoder(&buf)
+	// encoder.Encode(handshakeBody)
 
-	lengthOfHandshake := len(buf.Bytes())
-	handshakeBytes := make([]byte, 0)
-	handshakeBytes = append(handshakeBytes, byte(constants.MasterChunkServerHandshakeType))
-	handshakeBytes = binary.LittleEndian.AppendUint16(handshakeBytes, uint16(lengthOfHandshake))
-	handshakeBytes = append(handshakeBytes, buf.Bytes()...)
+	// lengthOfHandshake := len(buf.Bytes())
+	// handshakeBytes := make([]byte, 0)
+	// handshakeBytes = append(handshakeBytes, byte(constants.MasterChunkServerHandshakeType))
+	// handshakeBytes = binary.LittleEndian.AppendUint16(handshakeBytes, uint16(lengthOfHandshake))
+	// handshakeBytes = append(handshakeBytes, buf.Bytes()...)
 
-	_, err := chunkServer.masterConnection.Write(handshakeBytes)
+	handshakeBytes, err := helper.EncodeMessage(constants.MasterChunkServerHandshakeType, handshakeBody)
+	if err != nil {
+		return err
+	}
+	_, err = chunkServer.masterConnection.Write(handshakeBytes)
 	if err != nil {
 		return err
 	}
@@ -265,16 +287,19 @@ func (chunkServer *ChunkServer) loadChunks() {
 }
 
 func (chunkServer *ChunkServer) handleClientReadRequest(conn net.Conn, requestBodyBytes []byte) {
-	var request constants.ClientChunkServerReadRequest
-	requestReader := bytes.NewReader(requestBodyBytes)
-	decoder := gob.NewDecoder(requestReader)
-	err := decoder.Decode(&request)
+	// var request constants.ClientChunkServerReadRequest
+	// requestReader := bytes.NewReader(requestBodyBytes)
+	// decoder := gob.NewDecoder(requestReader)
+	// err := decoder.Decode(&request)
+	// if err != nil {
+	// 	log.Println("Encoding failed:", err)
+	// 	return
+	// }
+	request, err := helper.DecodeMessage[constants.ClientChunkServerReadRequest](requestBodyBytes)
 	if err != nil {
-		log.Println("Encoding failed:", err)
 		return
 	}
-
-	chunkServer.writeClientReadResponse(conn, request)
+	chunkServer.writeClientReadResponse(conn, *request)
 
 }
 
@@ -333,99 +358,147 @@ func (chunkServer *ChunkServer) writeChunkToCache(req constants.ClientChunkServe
 	return nil
 }
 
-func (chunkServer *ChunkServer) mutateChunk(file *os.File,mutationId int64) (error) {
+func (chunkServer *ChunkServer) mutateChunk(file *os.File, mutationId int64, offset int64) error {
 
+	if offset != -1 {
+		_, err := file.Seek(offset, io.SeekStart)
+		if err != nil {
+			return err
+		}
+	}
 	data, present := chunkServer.lruCache.Get(mutationId)
 	if !present {
 		return errors.New("data not present in lru cache")
 	}
 
-	_, err := io.Copy(file,bytes.NewReader(data))
+	_, err := io.Copy(file, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 	return nil
 
 }
-// func (chunkServer *ChunkServer) handleClientCommitRequest(conn net.Conn, requestBodyBytes []byte) {
-// 	var req constants.PrimaryChunkCommitRequest
-// 	decoder := gob.NewDecoder(bytes.NewReader(requestBodyBytes))
-// 	err := decoder.Decode(&req)
-// 	if err != nil {
-// 		return
-// 	}
 
-// 	offset, err := chunkServer.mutateChunk(req)
-// 	if err != nil {
-// 		return
-// 	}
+func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(conn net.Conn, req constants.InterChunkServerCommitRequest) error {
 
-// 	interChunkServerCommitRequest := constants.InterChunkServerCommitRequest{
-// 		ChunkHandle:   req.ChunkHandle,
-// 		MutationOrder: make([]int64, 0),
-// 		ChunkOffset:   offset,
-// 	}
+	// var buf bytes.Buffer
+	// encoder := gob.NewEncoder(&buf)
+	// err := encoder.Encode(req)
+	// if err != nil {
+	// 	return err
+	// }
 
-// 	for i := range req.SecondaryServers {
+	// lengthOfRequest := len(buf.Bytes())
+	// requestBytes := make([]byte, 0)
+	// requestBytes = append(requestBytes, byte(constants.InterChunkServerCommitRequestType))
+	// requestBytes = binary.LittleEndian.AppendUint16(requestBytes, uint16(lengthOfRequest))
+	// requestBytes = append(requestBytes, buf.Bytes()...)
 
-// 	}
-
-// }
-
-func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(conn net.Conn,req constants.InterChunkServerCommitRequest) error {
-
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	err := encoder.Encode(req)
+	requestBytes, err := helper.EncodeMessage(constants.InterChunkServerCommitRequestType, req)
 	if err != nil {
 		return err
 	}
 
-	lengthOfRequest := len(buf.Bytes())
-	requestBytes := make([]byte, 0)
-	requestBytes = append(requestBytes, byte(constants.InterChunkServerCommitRequestType))
-	requestBytes = binary.LittleEndian.AppendUint16(requestBytes, uint16(lengthOfRequest))
-	requestBytes = append(requestBytes, buf.Bytes()...)	
-
-	_,err=conn.Write(requestBytes)
-	if err!=nil{
+	_, err = conn.Write(requestBytes)
+	if err != nil {
 		return err
 	}
 
-	err=chunkServer.handleInterChunkCommitResponse(conn)
-	if err!=nil{
+	err = chunkServer.handleInterChunkCommitResponse(conn)
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (chunkServer *ChunkServer) handleInterChunkCommitResponse(conn net.Conn) error{
+func (chunkServer *ChunkServer) handleInterChunkCommitResponse(conn net.Conn) error {
 
-	messageType,messageBytes,err:=readMessage(conn)
-	if err!=nil{
+	messageType, messageBytes, err := helper.ReadMessage(conn)
+	if err != nil {
 		return err
 	}
 
-	if messageType!=constants.InterChunkServerCommitResponseType{
+	if messageType != constants.InterChunkServerCommitResponseType {
 		return err
 	}
 
-	var response constants.InterChunkServerCommitResponse
-	responseReader := bytes.NewReader(messageBytes)
-	decoder := gob.NewDecoder(responseReader)
-	err = decoder.Decode(&response)
-	if err!=nil{
-		return errors.New("error on one of the chunk Servers")
+	// var response constants.InterChunkServerCommitResponse
+	// responseReader := bytes.NewReader(messageBytes)
+	// decoder := gob.NewDecoder(responseReader)
+	// err = decoder.Decode(&response)
+	// if err!=nil{
+	// 	return errors.New("error on one of the chunk Servers")
+	// }
+
+	response, err := helper.DecodeMessage[constants.InterChunkServerCommitResponse](messageBytes)
+	if err != nil {
+		return err
 	}
-	if !response.Status{
+
+	if !response.Status {
 		return errors.New("error on one of the chunk Servers")
 	}
 	return nil
 
 }
 
-func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(chunkServers []string) {
+func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Conn, requestBodyBytes []byte) {
 
+	errorDuringCommitRequest := false
+	// var request constants.InterChunkServerCommitRequest
+	// decoder:=gob.NewDecoder(bytes.NewReader(requestBodyBytes))
+	// err:=decoder.Decode(&request)
+	// if err!=nil{
+	// 	errorDuringCommitRequest=true
+	// }
+
+	request, err := helper.DecodeMessage[constants.InterChunkServerCommitRequest](requestBodyBytes)
+	if err != nil {
+		errorDuringCommitRequest = true
+	}
+
+	if errorDuringCommitRequest {
+
+	}
+
+	chunkServer.chunkServerMu.Lock()
+	defer chunkServer.chunkServerMu.Unlock()
+	file, err := os.OpenFile(strconv.FormatInt(request.ChunkHandle, 10)+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		errorDuringCommitRequest = true
+	}
+
+	for _, mutationId := range request.MutationOrder {
+		err = chunkServer.mutateChunk(file, mutationId, -1)
+		if err != nil {
+			errorDuringCommitRequest = true
+			break
+		}
+	}
+
+	response := constants.InterChunkServerCommitResponse{
+		Status: true,
+	}
+	if errorDuringCommitRequest {
+		response.Status = false
+	}
+
+	// var buf bytes.Buffer
+	// encoder := gob.NewEncoder(&buf)
+	// encoder.Encode(response)
+
+	// lengthOfRequest := len(buf.Bytes())
+	// requestBytes := make([]byte, 0)
+	// requestBytes = append(requestBytes, byte(constants.InterChunkServerCommitResponseType))
+	// requestBytes = binary.LittleEndian.AppendUint16(requestBytes, uint16(lengthOfRequest))
+	// requestBytes = append(requestBytes, buf.Bytes()...)
+
+	requestBytes, _ := helper.EncodeMessage(constants.InterChunkServerCommitResponseType, response)
+
+	_, err = conn.Write(requestBytes)
+	if err != nil {
+		return
+	}
 
 }
 
@@ -435,17 +508,22 @@ func (chunkServer *ChunkServer) writeClientWriteResponse(conn net.Conn) error {
 		Status: true,
 	}
 
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	encoder.Encode(writeResponse)
+	// var buf bytes.Buffer
+	// encoder := gob.NewEncoder(&buf)
+	// encoder.Encode(writeResponse)
 
-	lengthOfResponse := len(buf.Bytes())
-	responseBytes := make([]byte, 0)
-	responseBytes = append(responseBytes, byte(constants.ClientChunkServerWriteResponseType))
-	responseBytes = binary.LittleEndian.AppendUint16(responseBytes, uint16(lengthOfResponse))
-	responseBytes = append(responseBytes, buf.Bytes()...)
+	// lengthOfResponse := len(buf.Bytes())
+	// responseBytes := make([]byte, 0)
+	// responseBytes = append(responseBytes, byte(constants.ClientChunkServerWriteResponseType))
+	// responseBytes = binary.LittleEndian.AppendUint16(responseBytes, uint16(lengthOfResponse))
+	// responseBytes = append(responseBytes, buf.Bytes()...)
 
-	_, err := conn.Write(responseBytes)
+	responseBytes, err := helper.EncodeMessage(constants.ClientChunkServerWriteResponseType, writeResponse)
+	if err!=nil{
+		return err
+	}
+
+	_, err = conn.Write(responseBytes)
 	if err != nil {
 		return err
 	}
@@ -453,14 +531,19 @@ func (chunkServer *ChunkServer) writeClientWriteResponse(conn net.Conn) error {
 	return nil
 }
 func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestBodyBytes []byte) {
-	var req constants.ClientChunkServerWriteRequest
-	decoder := gob.NewDecoder(bytes.NewReader(requestBodyBytes))
-	err := decoder.Decode(&req)
+	// var req constants.ClientChunkServerWriteRequest
+	// decoder := gob.NewDecoder(bytes.NewReader(requestBodyBytes))
+	// err := decoder.Decode(&req)
+	// if err != nil {
+	// 	return
+	// }
+
+	req, err := helper.DecodeMessage[constants.ClientChunkServerWriteRequest](requestBodyBytes)
 	if err != nil {
-		return
+		return 
 	}
 
-	err = chunkServer.writeChunkToCache(req)
+	err = chunkServer.writeChunkToCache(*req)
 	if err != nil {
 		return
 	}
@@ -472,7 +555,7 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 }
 
 func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
-	messageType, _, err := readMessage(chunkServer.masterConnection)
+	messageType, _, err := helper.ReadMessage(chunkServer.masterConnection)
 	if err != nil {
 		log.Println(err)
 		return err
@@ -488,49 +571,11 @@ func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(conn net.Conn, req
 
 }
 
-func readMessage(conn net.Conn) (constants.MessageType, []byte, error) {
-	messageType := make([]byte, 1)
-	n, err := conn.Read(messageType)
-	if err != nil {
-		if err == io.EOF {
-			log.Println("Connection closed by client during message type read")
-			return constants.MessageType(0), nil, err
-		}
-		log.Printf("Error reading request type: %v", err)
-		return constants.MessageType(0), nil, ErrReadMessageType
-	}
-	if n == 0 {
-		log.Println("No data read for message type, connection might be closing") // Log this case
-		return constants.MessageType(0), nil, io.ErrUnexpectedEOF                 // Or return a more appropriate error, maybe retry logic in caller?
-	}
-
-	// Read the request length (2 bytes)
-	messageLength := make([]byte, 2)
-	_, err = io.ReadFull(conn, messageLength)
-	if err != nil {
-		log.Printf("Error reading request length: %v", err)
-		return constants.MessageType(0), nil, ErrReadMessageLength
-	}
-
-	// Get the length as uint16
-	length := binary.LittleEndian.Uint16(messageLength)
-
-	// Read the request body
-	requestBodyBytes := make([]byte, length)
-	_, err = io.ReadFull(conn, requestBodyBytes)
-	if err != nil {
-		log.Printf("Error reading request body (length %d): %v", length, err)
-		return constants.MessageType(0), nil, ErrReadMessageBody
-	}
-
-	return constants.MessageType(messageType[0]), requestBodyBytes, nil
-}
-
 func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		messageType, messageBody, err := readMessage(conn)
+		messageType, messageBody, err := helper.ReadMessage(conn)
 		if err != nil {
 			log.Println(err)
 			return
@@ -539,6 +584,8 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 		switch messageType {
 		case constants.PrimaryChunkCommitRequestType:
 			// chunkServer.
+		case constants.InterChunkServerCommitRequestType:
+			chunkServer.handleInterChunkServerCommitRequest(conn, messageBody)
 		case constants.ClientChunkServerReadRequestType:
 			chunkServer.handleClientReadRequest(conn, messageBody)
 		case constants.ClientChunkServerWriteRequestType:

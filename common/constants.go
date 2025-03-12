@@ -1,4 +1,4 @@
-package constants
+package common
 
 type MessageType = int
 
@@ -56,10 +56,10 @@ type ClientMasterReadRequest struct {
 	Offset   int    // Capitalized field name
 }
 
-type UnserializedResponse struct {
-	MessageType       MessageType // Capitalized field name
-	ResponseBodyBytes []byte      // Capitalized field name
-}
+// type UnserializedResponse struct {
+// 	MessageType       MessageType // Capitalized field name
+// 	ResponseBodyBytes []byte      // Capitalized field name
+// }
 
 type ClientMasterReadResponse struct {
 	ChunkHandle  int64    // Capitalized field name
