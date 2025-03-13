@@ -9,9 +9,17 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 
 	constants "github.com/involk-secure-1609/goGFS/common"
 )
+
+
+func AddTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {
+	err := conn.SetDeadline(time.Now().Add(interval))
+	return err
+}
+
 
 // EncodeMessage is a generic function that encodes a struct into a byte slice with message type header
 func EncodeMessage[T any](messageType constants.MessageType, message T) ([]byte, error) {
@@ -71,7 +79,9 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
 		log.Println("No data read for message type, connection might be closing") // Log this case
 		return constants.MessageType(0), nil, io.ErrUnexpectedEOF                 // Or return a more appropriate error, maybe retry logic in caller?
 	}
-
+	// if ( constants.MessageType(messageType[0])==constants.ClientChunkServerWriteRequestType){
+	// 	return constants.MessageType(messageType[0]),nil,nil
+	// }
 	// Read the request length (2 bytes)
 	messageLength := make([]byte, 2)
 	_, err = io.ReadFull(conn, messageLength)

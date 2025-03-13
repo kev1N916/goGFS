@@ -1,4 +1,4 @@
-package main
+package master
 
 import (
 	"log"
@@ -47,45 +47,55 @@ func NewMaster(port string) (*Master, error) {
 		chunkHandler: make(map[int64][]string),
 	}, nil
 }
-func (master *Master) writeMasterReadResponse(conn net.Conn, chunkServers []string, chunkHandle int64) {
-	readResponse := common.ClientMasterReadResponse{
-		ChunkHandle:  chunkHandle,
-		ChunkServers: chunkServers,
-	}
+func (master *Master) writeMasterReadResponse(conn net.Conn, readResponse common.ClientMasterReadResponse) error {
+	// readResponse := common.ClientMasterReadResponse{
+	// 	ChunkHandle:  chunkHandle,
+	// 	ChunkServers: chunkServers,
+	// }
 	readResponseInBytes, err := helper.EncodeMessage(common.ClientMasterReadResponseType, readResponse)
 	if err != nil {
-		return
+		return err
 	}
-	conn.Write(readResponseInBytes)
-
+	_, err = conn.Write(readResponseInBytes)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []byte) {
+func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterReadRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Decoding failed:", err)
-		return
+		return err
 	}
-
+	readResponse := common.ClientMasterReadResponse{
+		Error:        "file not found",
+		ChunkHandle:  -1,
+		ChunkServers: make([]string, 0),
+	}
 	fileInfo, err := os.Stat(request.Filename)
 	if err != nil {
-		log.Println("Error getting file info:", err)
-		return
+		master.writeMasterReadResponse(conn, readResponse)
+		return err
 	}
-
-	log.Println("File Name:", fileInfo.Name())
-	log.Println("Size (bytes):", fileInfo.Size())
 	chunkOffset := fileInfo.Size() / common.ChunkSize
+	master.mu.Lock()
 	chunk := master.fileMap[request.Filename][chunkOffset]
 	chunkServers := master.chunkHandler[chunk.ChunkHandle]
-	master.writeMasterReadResponse(conn, chunkServers, chunk.ChunkHandle)
+	master.mu.Unlock()
+	readResponse.ChunkHandle = chunk.ChunkHandle
+	readResponse.ChunkServers = chunkServers
+	readResponse.Error = ""
+	master.writeMasterReadResponse(conn, readResponse)
+	return nil
 }
 
-func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes []byte) {
+func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterWriteRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Decoding failed:", err)
-		return
+		return err
 	}
 
 	opsToLog := make([]FileChunkMapping, 0)
@@ -105,41 +115,56 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes [
 	}
 	chunkHandle := master.fileMap[request.Filename][len(master.fileMap[request.Filename])-1].ChunkHandle
 	_, chunkServerExists := master.chunkHandler[chunkHandle]
+	servers := master.chooseSecondaryServers()
 	if !chunkServerExists {
-		master.chunkHandler[chunkHandle] = master.chooseSecondaryServers()
+		master.chunkHandler[chunkHandle] = servers
 	}
 	master.mu.Unlock()
-	err = master.writeToOpLog(opsToLog)
-	if err != nil {
-		return
-	}
-	master.writeMasterWriteResponse(conn, chunkHandle)
-}
-
-func (master *Master) writeMasterWriteResponse(conn net.Conn, chunkHandle int64) {
+	primaryServer, secondaryServers := master.choosePrimaryAndSecondary(servers)
 	writeResponse := common.ClientMasterWriteResponse{
 		ChunkHandle:           chunkHandle,
 		MutationId:            master.idGenerator.Generate().Int64(),
-		PrimaryChunkServer:    master.chunkHandler[chunkHandle][0],
-		SecondaryChunkServers: master.chunkHandler[chunkHandle][1:],
+		PrimaryChunkServer:    primaryServer,
+		SecondaryChunkServers: secondaryServers,
 	}
-	writeResponseInBytes, err := helper.EncodeMessage(common.ClientMasterWriteResponseType, writeResponse)
+	err = master.writeToOpLog(opsToLog)
 	if err != nil {
-		return
+		return err
 	}
-	conn.Write(writeResponseInBytes)
+
+	err = master.writeMasterWriteResponse(conn, writeResponse)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (master *Master) writeHandshakeResponse(conn net.Conn) {
-	handshakeResponse := common.MasterChunkServerHandshakeResponse{
-		Message: "Handshake successful",
+func (master *Master) writeMasterWriteResponse(conn net.Conn, writeResponse common.ClientMasterWriteResponse) error {
+
+	writeResponseInBytes, err := helper.EncodeMessage(common.ClientMasterWriteResponseType, writeResponse)
+	if err != nil {
+		return err
 	}
+	_, err = conn.Write(writeResponseInBytes)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (master *Master) writeHandshakeResponse(conn net.Conn, handshakeResponse common.MasterChunkServerHandshakeResponse) error {
+	// handshakeResponse := common.MasterChunkServerHandshakeResponse{
+	// 	Message: "Handshake successful",
+	// }
 	handshakeResponseInBytes, err := helper.EncodeMessage(common.MasterChunkServerHandshakeResponseType, handshakeResponse)
 	if err != nil {
-		return
+		return err
 	}
-	conn.Write(handshakeResponseInBytes)
-
+	_, err = conn.Write(handshakeResponseInBytes)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 func (master *Master) writeHeartbeatResponse(conn net.Conn, chunksToBeDeleted []int64) {
 	heartbeatResponse := common.MasterChunkServerHeartbeatResponse{
@@ -175,18 +200,25 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 
 }
 
-func (master *Master) handleMasterHandshake(conn net.Conn, requestBodyBytes []byte) {
+func (master *Master) handleMasterHandshake(conn net.Conn, requestBodyBytes []byte) error {
 	handshake, err := helper.DecodeMessage[common.MasterChunkServerHandshake](requestBodyBytes)
 	if err != nil {
 		log.Println("Encoding failed:", err)
-		return
+		return err
 	}
+	master.mu.Lock()
 	for _, chunkId := range handshake.ChunkIds {
 		master.chunkHandler[chunkId] = append(master.chunkHandler[chunkId], conn.RemoteAddr().String())
 	}
-
-	master.writeHandshakeResponse(conn)
-
+	master.mu.Unlock()
+	handshakeResponse := common.MasterChunkServerHandshakeResponse{
+		Message: "Handshake successful",
+	}
+	err = master.writeHandshakeResponse(conn, handshakeResponse)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (master *Master) Start() error {
@@ -224,18 +256,35 @@ func (master *Master) handleConnection(conn net.Conn) {
 		case common.ClientMasterReadRequestType:
 			log.Println("Received MasterReadRequestType")
 			// Process read request
-			master.handleMasterReadRequest(conn, messageBytes)
-
+			err = helper.AddTimeoutForTheConnection(conn, 20*time.Second)
+			if err != nil {
+				return
+			}
+			err = master.handleMasterReadRequest(conn, messageBytes)
+			if err != nil {
+				return
+			}
 		case common.ClientMasterWriteRequestType:
 			log.Println("Received MasterWriteRequestType")
-			// Process write request
-			master.handleMasterWriteRequest(conn, messageBytes)
+			// Process read request
+			err = helper.AddTimeoutForTheConnection(conn, 30*time.Second)
+			if err != nil {
+				return
+			}
 
+			// Process write request
+			err = master.handleMasterWriteRequest(conn, messageBytes)
+			if err != nil {
+				return
+			}
 		case common.MasterChunkServerHandshakeType:
 			log.Println("Received MasterChunkServerHandshakeType")
 			// Process handshake
-			master.handleMasterHandshake(conn, messageBytes)
-		case common.MasterChunkServerHeartbeatType:
+			err=master.handleMasterHandshake(conn, messageBytes)
+			if err!=nil{
+				return 
+			}
+		case common.MasterChunkServerHeartbeatResponseType:
 			log.Println("Received MasterChunkServerHeartbeatType")
 			// Process heartbeat
 			master.handleChunkServerHeartbeatResponse(conn, messageBytes)
@@ -244,20 +293,4 @@ func (master *Master) handleConnection(conn net.Conn) {
 			log.Println("Received unknown request type:", messageType)
 		}
 	}
-}
-
-func (master *Master) chooseSecondaryServers() []string {
-	servers := make([]string, 0)
-	for i := range 3 {
-		server := master.serverList[i]
-		servers = append(servers, server.server)
-		master.serverList.update(server, server.NumberOfChunks+1)
-	}
-
-	return servers
-}
-
-func (master *Master) generateNewChunkId() int64 {
-	id := master.idGenerator.Generate()
-	return id.Int64()
 }

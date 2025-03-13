@@ -64,6 +64,7 @@ type ClientMasterReadRequest struct {
 type ClientMasterReadResponse struct {
 	ChunkHandle  int64    // Capitalized field name
 	ChunkServers []string // Capitalized field name
+	Error string
 }
 
 type ClientMasterWriteRequest struct {
@@ -79,8 +80,8 @@ type ClientMasterWriteResponse struct {
 
 type ClientChunkServerReadRequest struct {
 	ChunkHandle int64 // Capitalized field name
-	OffsetStart int64 // Capitalized field name
-	OffsetEnd   int64 // Capitalized field name
+	// OffsetStart int64 // Capitalized field name
+	// OffsetEnd   int64 // Capitalized field name
 }
 
 type PrimaryChunkCommitRequest struct {
@@ -90,6 +91,7 @@ type PrimaryChunkCommitRequest struct {
 }
 
 type PrimaryChunkCommitResponse struct {
+	Offset int64
 	Status bool // 1 if the message was received succefully
 }
 
@@ -114,5 +116,4 @@ type InterChunkServerCommitResponse struct{
 type ClientChunkServerWriteRequest struct {
 	MutationId int64
 	ChunkHandle int64  // Capitalized field name
-	Data    []byte // Capitalized field name
 }

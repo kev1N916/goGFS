@@ -1,9 +1,9 @@
-package main
+package client
 
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,7 +19,7 @@ import (
 type Client struct {
 	clientMu sync.Mutex
 	masterServer string
-	chunkCache   map[string][]string
+	chunkCache   map[int64][]string
 }
 
 func NewClient(masterServer string) *Client {
@@ -28,51 +28,27 @@ func NewClient(masterServer string) *Client {
 	}
 }
 
-// SerializeMessage serializes any message type into bytes
-func serializeMessage(msgType common.MessageType, msg any) ([]byte, error) {
-    // Initialize byte slice with message type
-    serialized := make([]byte, 1)
-    serialized[0] = byte(msgType)
-    
-    // Serialize the message struct
-    var buf bytes.Buffer
-    err := gob.NewEncoder(&buf).Encode(msg)
-    if err != nil {
-        return nil, fmt.Errorf("encode error: %w", err)
-    }
-    
-    // Get serialized bytes
-    msgBytes := buf.Bytes()
-    
-    // Append length of message (using 4 bytes to support larger messages)
-    lengthBytes := make([]byte, 4)
-    binary.LittleEndian.PutUint32(lengthBytes, uint32(len(msgBytes)))
-    serialized = append(serialized, lengthBytes...)
-    
-    // Append message data
-    serialized = append(serialized, msgBytes...)
-    
-    return serialized, nil
-}
 
+/** CLIENT READ OPERATIONS **/
+
+/* Client->Master Operation*/
 func (client *Client) readFromMasterServer(readRequest common.ClientMasterReadRequest) (*common.ClientMasterReadResponse, error) {
 
 	conn, dialErr := net.Dial("tcp", client.masterServer)
 	if dialErr != nil {
-		return nil, fmt.Errorf("failed to dial master server: %w", dialErr) // Wrap error for more context
+		return nil, fmt.Errorf("failed to dial master server: %w", dialErr) 
 	}
-	defer conn.Close() // Ensure connection is closed when function exits
+	defer conn.Close() 
 
-	requestBytes, serializeErr := serializeMessage(common.ClientMasterReadRequestType,readRequest)
+	requestBytes, serializeErr := helper.EncodeMessage(common.ClientMasterReadRequestType,readRequest)
 	if serializeErr != nil {
 		return nil, fmt.Errorf("failed to serialize read request: %w", serializeErr) // Wrap error
 	}
 
-	bytesWritten, writeErr := conn.Write(requestBytes)
+	_, writeErr := conn.Write(requestBytes)
 	if writeErr != nil {
 		return nil, fmt.Errorf("failed to write read request to connection: %w", writeErr) // Wrap error
 	}
-	log.Printf("Bytes written for request: %d", bytesWritten) // More descriptive log
 
 	messageType,messageBody,err:=helper.ReadMessage(conn)
 	if err!=nil{
@@ -81,41 +57,32 @@ func (client *Client) readFromMasterServer(readRequest common.ClientMasterReadRe
 	if messageType!=common.ClientMasterReadResponseType{
 		return nil,fmt.Errorf("expected response type %d but got %d",common.PrimaryChunkCommitResponseType,messageType)
 	}
-	// To reconstruct (deserialize):
-	var response common.ClientMasterReadResponse
-	responseReader := bytes.NewReader(messageBody)
-	deserializeErr := binary.Read(responseReader, binary.LittleEndian, &response)
-	if deserializeErr != nil {
-		return nil, fmt.Errorf("failed to deserialize read response: %w", deserializeErr) // Wrap error
+
+	response,err:=helper.DecodeMessage[common.ClientMasterReadResponse](messageBody)
+	if err!=nil{
+		return nil,err
 	}
-	fmt.Printf("Reconstructed Response Struct: %+v\n", response) // Renamed variable in Printf
-
-	return &response, nil
+	return response, nil
 
 }
 
-func (client *Client) cacheChunkServers(fileName string, readResponse *common.ClientMasterReadResponse) {
-	client.clientMu.Lock()
-	defer client.clientMu.Unlock()
-	client.chunkCache[fileName] = readResponse.ChunkServers
-}
-
-func (client *Client) readFromChunkServer(offsetStart int64, offsetEnd int64, readResponse *common.ClientMasterReadResponse) error {
+/* Client->ChunkServer Operation*/
+func (client *Client) readFromChunkServer(readResponse *common.ClientMasterReadResponse) ([]byte,error) {
 	for _, chunkServer := range readResponse.ChunkServers {
 		conn, dialErr := net.Dial("tcp", chunkServer)
 		if dialErr != nil {
-			log.Printf("failed to dial chunk server: %v", dialErr) // Log error
+			log.Printf("failed to dial chunk server: %v", dialErr) 
 			continue
 		}
-		defer conn.Close() // Ensure connection is closed when function exits
+		defer conn.Close() 
 
 		chunkServerReadRequest := common.ClientChunkServerReadRequest{
 			ChunkHandle: readResponse.ChunkHandle,
-			OffsetStart: offsetStart,
-			OffsetEnd:   offsetEnd,
+			// OffsetStart: offsetStart,
+			// OffsetEnd:   offsetEnd,
 		}
 
-		requestBytes, serializeErr := serializeMessage(common.ClientChunkServerReadRequestType,chunkServerReadRequest)
+		requestBytes, serializeErr := helper.EncodeMessage(common.ClientChunkServerReadRequestType,chunkServerReadRequest)
 
 		if serializeErr != nil {
 			continue
@@ -139,8 +106,7 @@ func (client *Client) readFromChunkServer(offsetStart int64, offsetEnd int64, re
 		}
 
 		fileSize := binary.LittleEndian.Uint64(sizeBuf)
-		fmt.Printf("Receiving file of size: %d bytes\n", fileSize)
-		// Create a buffer to hold the file data
+		log.Printf("Receiving file of size: %d bytes\n", fileSize)
 
 		fileData := make([]byte, fileSize)
 
@@ -152,27 +118,61 @@ func (client *Client) readFromChunkServer(offsetStart int64, offsetEnd int64, re
 			// return nil, err
 		}
 
-		fmt.Printf("File received successfully. %d bytes read\n", bytesReceived)
+		log.Printf("File received successfully. %d bytes read\n", bytesReceived)
 
-		// Now, fileData contains the entire file as a byte array
-		return nil
+		return fileData,nil
 
 	}
 
-	return fmt.Errorf("failed to read from any chunk server")
+	return nil,fmt.Errorf("failed to read from any chunk server")
 }
 
+
+func (client *Client) Read(filename string, offset int) error {
+
+	masterReadRequest := common.ClientMasterReadRequest{
+		Filename: filename,
+		Offset:   offset,
+	}
+	readResponse, err := client.readFromMasterServer(masterReadRequest)
+	if err != nil {
+		return err
+	}
+
+	if(readResponse.Error!=""){
+		return errors.New(readResponse.Error)
+	}
+	client.cacheChunkServers(readResponse.ChunkHandle, readResponse)
+
+	chunkData,err := client.readFromChunkServer(readResponse)
+	if err != nil {
+		return err
+	}
+	log.Print(chunkData)
+	return nil
+}
+
+
+/** CLIENT WRITE OPERATIONS **/
+
+
+/* Client->Master Operation*/
 func (client *Client) writeToMasterServer(request common.ClientMasterWriteRequest) (*common.ClientMasterWriteResponse ,error){
 
 	conn, err := net.Dial("tcp", client.masterServer)
 	if err != nil {
 		return nil,err
 	}
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	encoder.Encode(request)
+	defer conn.Close()
+	// var buf bytes.Buffer
+	// encoder := gob.NewEncoder(&buf)
+	// encoder.Encode(request)
 
-	_,err=conn.Write(buf.Bytes())
+	requestBytes,err:=helper.EncodeMessage(common.ClientMasterWriteRequestType,request)
+	if err!=nil{
+		return nil,err
+	}
+	_,err=conn.Write(requestBytes)
 	if err!=nil{
 		return nil,err
 	}
@@ -185,37 +185,20 @@ func (client *Client) writeToMasterServer(request common.ClientMasterWriteReques
 		return nil,fmt.Errorf("expected response type %d but got %d",common.PrimaryChunkCommitResponseType,messageType)
 	}
 
-	decoder:=gob.NewDecoder(bytes.NewReader(messageBody))
-	var response common.ClientMasterWriteResponse
-	err=decoder.Decode(&response)
+	// decoder:=gob.NewDecoder(bytes.NewReader(messageBody))
+	// var response common.ClientMasterWriteResponse
+	// err=decoder.Decode(&response)
+
+	response,err:=helper.DecodeMessage[common.ClientMasterWriteResponse](messageBody)
 	if err!=nil{
 		return nil,err
 	}
 
-
-	return &response,err
-}
-func (client *Client) Read(filename string, offset int) error {
-
-	masterReadRequest := common.ClientMasterReadRequest{
-		Filename: filename,
-		Offset:   offset,
-	}
-	readResponse, err := client.readFromMasterServer(masterReadRequest)
-	if err != nil {
-		return err
-	}
-
-	client.cacheChunkServers(filename, readResponse)
-
-	err = client.readFromChunkServer(0, 80, readResponse)
-	if err != nil {
-		return err
-	}
-	return nil
+	return response,err
 }
 
-func (client *Client) writeChunkToSingleServer(chunkServerPort string, data []byte) error {
+/* Client->ChunkServer Operation*/
+func (client *Client) writeChunkToSingleServer(chunkServerPort string,request common.ClientChunkServerWriteRequest,data []byte) error {
     maxRetries := 5
     initialBackoff := 100 * time.Millisecond
     maxBackoff := 5 * time.Second
@@ -229,25 +212,35 @@ func (client *Client) writeChunkToSingleServer(chunkServerPort string, data []by
                 return fmt.Errorf("failed to connect to chunk server %s: %w", chunkServerPort, err)
             }
             defer conn.Close()
-            
-          
-            
+			requestBytes,err:=helper.EncodeMessage(common.ClientChunkServerWriteRequestType,request)
+			if err!=nil{
+				return err
+			}
+			_,err=conn.Write(requestBytes)
+			if err!=nil{
+				return err
+			}
             // Send the actual data
             _, err = io.Copy(conn, bytes.NewReader(data))
             if err != nil {
                 return fmt.Errorf("failed to send data: %w", err)
             }
-            
-            // Wait for acknowledgment (optional, implement based on your protocol)
-            // For example, read a success/failure response
-            respBuf := make([]byte, 1)
-            if _, err = conn.Read(respBuf); err != nil {
-                return fmt.Errorf("failed to receive acknowledgment: %w", err)
-            }
-            
-            if respBuf[0] != 1 { // Assuming 1 means success
-                return fmt.Errorf("server returned error code: %d", respBuf[0])
-            }
+
+			messageType,messageBytes,err:=helper.ReadMessage(conn)
+			if err!=nil{
+				return errors.New("error on one of the chunk Servers")
+			}
+			if messageType!=common.ClientChunkServerWriteResponseType{
+				return errors.New("error on one of the chunk Servers")
+			}
+
+			response,err:=helper.DecodeMessage[common.ClientChunkServerWriteResponse](messageBytes)
+			if err!=nil{
+				return errors.New("error on one of the chunk Servers")
+			}
+			if !response.Status{
+				return errors.New("error on one of the chunk Servers")
+			}
             
             return nil
         }()
@@ -282,24 +275,8 @@ func (client *Client) writeChunkToSingleServer(chunkServerPort string, data []by
     // This should never be reached due to the return in the last iteration of the loop
     return fmt.Errorf("failed to write to chunk server after %d attempts", maxRetries)
 }
-func (client *Client) replicateChunkToAllServers(writeResponse common.ClientMasterWriteResponse,data []byte) error{
 
-	err:=client.writeChunkToSingleServer(writeResponse.PrimaryChunkServer,data)
-	if err!=nil{
-		return err
-	}
-
-	for i:=range(writeResponse.SecondaryChunkServers){
-		err=client.writeChunkToSingleServer(writeResponse.SecondaryChunkServers[i],data)
-		if err!=nil{
-			return err
-		}
-	}
-
-	return nil
-
-}
-
+/* Client->ChunkServer Operation*/
 func (client *Client) sendWriteRequestToPrimary(port string,writeRequestToPrimary common.PrimaryChunkCommitRequest) error{
 	conn, err := net.Dial("tcp", port)
 	if err != nil {
@@ -307,7 +284,11 @@ func (client *Client) sendWriteRequestToPrimary(port string,writeRequestToPrimar
 	}
 	defer conn.Close()
 	
-	messageBytes,err:=serializeMessage(common.PrimaryChunkCommitRequestType,writeRequestToPrimary)
+	// messageBytes,err:=serializeMessage(common.PrimaryChunkCommitRequestType,writeRequestToPrimary)
+	// if err!=nil{
+	// 	return err
+	// }
+	messageBytes,err:=helper.EncodeMessage(common.PrimaryChunkCommitRequestType,writeRequestToPrimary)
 	if err!=nil{
 		return err
 	}
@@ -323,18 +304,21 @@ func (client *Client) sendWriteRequestToPrimary(port string,writeRequestToPrimar
 	if messageType!=common.PrimaryChunkCommitResponseType{
 		return fmt.Errorf("expected response type %d but got %d",common.PrimaryChunkCommitResponseType,messageType)
 	}
-	var responseBody common.PrimaryChunkCommitResponse
-	decoder:=gob.NewDecoder(bytes.NewReader(messageBytes))
-	err=decoder.Decode(&responseBody)
+	// var responseBody common.PrimaryChunkCommitResponse
+	// decoder:=gob.NewDecoder(bytes.NewReader(messageBytes))
+	// err=decoder.Decode(&responseBody)
+	responseBody,err:=helper.DecodeMessage[common.PrimaryChunkCommitResponse](messageBytes)
 	if err!=nil{
 		return err
 	}
+
 	if !responseBody.Status{
 		return fmt.Errorf("primary chunk commit failed")
 	}
 	return nil
 
 }
+
 func (client *Client) Write(filename string,data []byte) error {
 
 	masterWriteRequest := common.ClientMasterWriteRequest{
@@ -363,3 +347,27 @@ func (client *Client) Write(filename string,data []byte) error {
 	
 	return nil
 }
+
+/* Client->ChunkServer Operation*/
+func (client *Client) replicateChunkToAllServers(writeResponse common.ClientMasterWriteResponse,data []byte) error{
+
+	request:=common.ClientChunkServerWriteRequest{
+		ChunkHandle: writeResponse.ChunkHandle,
+		MutationId: writeResponse.MutationId,
+	}
+	err:=client.writeChunkToSingleServer(writeResponse.PrimaryChunkServer,request,data)
+	if err!=nil{
+		return err
+	}
+
+	for i:=range(writeResponse.SecondaryChunkServers){
+		err=client.writeChunkToSingleServer(writeResponse.SecondaryChunkServers[i],request,data)
+		if err!=nil{
+			return err
+		}
+	}
+
+	return nil
+
+}
+
