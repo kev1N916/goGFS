@@ -94,8 +94,14 @@ func (chunkServer *ChunkServer) loadChunks() {
 func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool{
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	_,isPrimary:=chunkServer.leaseGrants[chunkHandle]
-	return isPrimary
+	leaseGrant,isPrimary:=chunkServer.leaseGrants[chunkHandle]
+	if(!isPrimary){
+		return false
+	}
+	if(time.Since(leaseGrant.grantTime)>=60*time.Second){
+		return false
+	}
+	return true
 }
 
 // func (chunk *ChunkServer) addTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {

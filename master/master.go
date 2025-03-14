@@ -309,8 +309,15 @@ func (master *Master) handleMasterHandshake(conn net.Conn, requestBodyBytes []by
 	if err != nil {
 		return err
 	}
-	master.chunkServerConnections = append(master.chunkServerConnections, ChunkServerConnection{port: conn.RemoteAddr().String(), conn: conn})
+	chunkServerConnection := ChunkServerConnection{port: conn.RemoteAddr().String(), conn: conn}
+	master.chunkServerConnections = append(master.chunkServerConnections, chunkServerConnection)
+
+	go master.startHeartBeatWithChunkServer(chunkServerConnection)
 	return nil
+}
+
+func (master *Master) startHeartBeatWithChunkServer(chunkServerConnection ChunkServerConnection) {
+
 }
 
 func (master *Master) Start() error {
@@ -334,6 +341,15 @@ func (master *Master) Start() error {
 	}
 }
 
+func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byte) error {
+	leaseRequest, err := helper.DecodeMessage[common.MasterChunkServerLeaseRequest](messageBytes)
+	if err != nil {
+		return err
+	}
+	// master
+	master.leaseGrants[leaseRequest.ChunkHandle].grantTime = master.leaseGrants[leaseRequest.ChunkHandle].grantTime.Add(30 * time.Second)
+	return nil
+}
 func (master *Master) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
@@ -391,6 +407,12 @@ func (master *Master) handleConnection(conn net.Conn) {
 			log.Println("Received MasterChunkServerHeartbeatType")
 			// Process heartbeat
 			err = master.handleChunkServerHeartbeatResponse(conn, messageBytes)
+			if err != nil {
+				return
+			}
+		case common.MasterChunkServerLeaseRequestType:
+			log.Println("Received MasterChunkServerLeaseRequestType")
+			err = master.handleMasterLeaseRequest(conn, messageBytes)
 			if err != nil {
 				return
 			}

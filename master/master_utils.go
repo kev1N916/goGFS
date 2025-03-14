@@ -67,7 +67,9 @@ func (master *Master) isLeaseValid(lease *Lease,port string) bool{
 }
 
 func (master *Master) renewLeaseGrant(lease *Lease){
-	lease.grantTime.Add(60*time.Second)
+	
+	newTime:=lease.grantTime.Add(60*time.Second)
+	lease.grantTime=newTime
 }
 func(master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string,[]string,error){
 	lease,doesLeaseExist:=master.leaseGrants[chunkHandle]
@@ -84,6 +86,10 @@ func(master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string,[]stri
 
 	if(master.isLeaseValid(lease,"")){
 		master.renewLeaseGrant(lease)
+		err := master.grantLeaseToPrimaryServer(lease.server, chunkHandle)
+		if err!=nil{
+			return "",nil,err
+		}
 		secondaryServers:=master.chooseSecondaryIfLeaseDoesExist(lease.server,master.chunkHandler[chunkHandle])
 		return lease.server,secondaryServers,nil
 	}else{
@@ -179,13 +185,13 @@ func (master *Master) tempDeleteFile(fileName string,newName string){
 	master.fileMap[newFileName] = chunks
 }
 
-// func (master *Master) renameFile(fileName string,fileNewName string){
+// // func (master *Master) renameFile(fileName string,fileNewName string){
 
+// // }
+
+// func (master *Master) permDeleteFile(fileName string) {
+// 	master.mu.Lock()
+// 	defer master.mu.Unlock()
+// 	delete(master.fileMap,fileName)
 // }
-
-func (master *Master) permDeleteFile(fileName string) {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	delete(master.fileMap,fileName)
-}
 

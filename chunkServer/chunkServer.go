@@ -14,21 +14,21 @@ import (
 	"time"
 
 	"github.com/involk-secure-1609/goGFS/common"
-	constants "github.com/involk-secure-1609/goGFS/common"
 	"github.com/involk-secure-1609/goGFS/helper"
 	lrucache "github.com/involk-secure-1609/goGFS/lruCache"
 )
 
 type CommitRequest struct {
 	conn          net.Conn
-	commitRequest constants.PrimaryChunkCommitRequest
+	commitRequest common.PrimaryChunkCommitRequest
 }
 
 type CommitResponse struct {
 	conn           net.Conn
-	commitResponse constants.PrimaryChunkCommitResponse
+	commitResponse common.PrimaryChunkCommitResponse
 }
 type ChunkServer struct {
+	leaseUsage map[int64] time.Time
 	commitRequestChannel chan CommitRequest
 	lruCache             *lrucache.LRUBufferCache
 	mu        sync.Mutex
@@ -36,7 +36,13 @@ type ChunkServer struct {
 	masterConnection     net.Conn
 	port                 string
 	chunkIds             []int64
-	leaseGrants map[int64]bool
+	leaseGrants map[int64]*LeaseGrant
+}
+
+type LeaseGrant struct{
+	chunkHandle int64 
+	granted bool
+	grantTime time.Time
 }
 
 func NewChunkServer(port string) *ChunkServer {
@@ -113,7 +119,7 @@ func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(chunkServerPort
 /* ChunkServer->Client Response */
 func (chunkServer *ChunkServer) writePrimaryChunkCommitResponse(response CommitResponse) error {
 
-	responseBytes, err := helper.EncodeMessage(constants.PrimaryChunkCommitResponseType, response.commitResponse)
+	responseBytes, err := helper.EncodeMessage(common.PrimaryChunkCommitResponseType, response.commitResponse)
 	if err != nil {
 		return err
 	}
@@ -125,9 +131,9 @@ func (chunkServer *ChunkServer) writePrimaryChunkCommitResponse(response CommitR
 }
 
 /* ChunkServer->ChunkServer Request */
-func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServers []string, req constants.InterChunkServerCommitRequest) error {
+func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServers []string, req common.InterChunkServerCommitRequest) error {
 
-	requestBytes, err := helper.EncodeMessage(constants.InterChunkServerCommitRequestType, req)
+	requestBytes, err := helper.EncodeMessage(common.InterChunkServerCommitRequestType, req)
 	if err != nil {
 		return err
 	}
@@ -150,11 +156,11 @@ func (chunkServer *ChunkServer) handleInterChunkCommitResponse(conn net.Conn) er
 		return err
 	}
 
-	if messageType != constants.InterChunkServerCommitResponseType {
+	if messageType != common.InterChunkServerCommitResponseType {
 		return err
 	}
 
-	response, err := helper.DecodeMessage[constants.InterChunkServerCommitResponse](messageBytes)
+	response, err := helper.DecodeMessage[common.InterChunkServerCommitResponse](messageBytes)
 	if err != nil {
 		return err
 	}
@@ -169,13 +175,13 @@ func (chunkServer *ChunkServer) handleInterChunkCommitResponse(conn net.Conn) er
 /* ChunkServer->ChunkServer Request */
 func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Conn, requestBodyBytes []byte) error{
 
-	response := constants.InterChunkServerCommitResponse{
+	response := common.InterChunkServerCommitResponse{
 		Status: true,
 	}
-	request, err := helper.DecodeMessage[constants.InterChunkServerCommitRequest](requestBodyBytes)
+	request, err := helper.DecodeMessage[common.InterChunkServerCommitRequest](requestBodyBytes)
 	if err != nil {
 		response.Status=false
-		responseBytes, _ := helper.EncodeMessage(constants.InterChunkServerCommitResponseType, response)
+		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 		_, err = conn.Write(responseBytes)
 		if err != nil {
 			return err
@@ -188,7 +194,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	file, err := os.OpenFile(strconv.FormatInt(request.ChunkHandle, 10)+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		response.Status=false
-		responseBytes, _ := helper.EncodeMessage(constants.InterChunkServerCommitResponseType, response)
+		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 		_, err = conn.Write(responseBytes)
 		if err != nil {
 			return err
@@ -200,7 +206,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		amountWritten, err := chunkServer.mutateChunk(file, mutationId, chunkOffset)
 		if err != nil {
 			response.Status=false
-			responseBytes, _ := helper.EncodeMessage(constants.InterChunkServerCommitResponseType, response)
+			responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 			_, err = conn.Write(responseBytes)
 			if err != nil {
 				return err
@@ -210,7 +216,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		chunkOffset+=amountWritten
 	}
 
-	requestBytes, _ := helper.EncodeMessage(constants.InterChunkServerCommitResponseType, response)
+	requestBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 
 	_, err = conn.Write(requestBytes)
 	if err != nil {
@@ -221,7 +227,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 
 /* Client->ChunkServer Request */
 func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requests []CommitRequest) error {
-	// response := constants.PrimaryChunkCommitResponse{
+	// response := common.PrimaryChunkCommitResponse{
 	// 	Offset: 0,
 	// 	Status: true,
 	// }
@@ -253,7 +259,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 			// errorOnPrimary = true
 			unsucessfullWrites = append(unsucessfullWrites, CommitResponse{
 				conn: value.conn,
-				commitResponse: constants.PrimaryChunkCommitResponse{
+				commitResponse: common.PrimaryChunkCommitResponse{
 					Offset: -1,
 					Status: false,
 				},
@@ -262,7 +268,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		}
 		successfullWrites = append(successfullWrites, CommitResponse{
 			conn: value.conn,
-			commitResponse: constants.PrimaryChunkCommitResponse{
+			commitResponse: common.PrimaryChunkCommitResponse{
 				Offset: chunkOffset,
 				Status: true,
 			},
@@ -271,8 +277,9 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		chunkOffset += amountWritten
 	}
 
+	chunkServer.sendLeaseExtensionRequest(chunkHandle)
 	if len(mutationOrder) > 0 {
-		interChunkServerCommitRequest := constants.InterChunkServerCommitRequest{
+		interChunkServerCommitRequest := common.InterChunkServerCommitRequest{
 			ChunkHandle:   chunkHandle,
 			ChunkOffset:   chunkOffset,
 			MutationOrder: mutationOrder,
@@ -300,10 +307,20 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 }
 
 
+func (chunkServer *ChunkServer) sendLeaseExtensionRequest(chunkHandle int64){
+
+	request:=common.MasterChunkServerLeaseRequest{
+		ChunkHandle: chunkHandle,
+	}
+	requestBytes,_:=helper.EncodeMessage(common.MasterChunkServerLeaseRequestType,request)
+
+	chunkServer.masterConnection.Write(requestBytes)
+
+}
 /* Client->ChunkServer */
 func (chunkServer *ChunkServer) handleClientReadRequest(conn net.Conn, requestBodyBytes []byte) error {
 
-	request, err := helper.DecodeMessage[constants.ClientChunkServerReadRequest](requestBodyBytes)
+	request, err := helper.DecodeMessage[common.ClientChunkServerReadRequest](requestBodyBytes)
 	if err != nil {
 		return err
 	}
@@ -314,7 +331,7 @@ func (chunkServer *ChunkServer) handleClientReadRequest(conn net.Conn, requestBo
 	return nil
 }
 /* ChunkServer->Client */
-func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request constants.ClientChunkServerReadRequest) error {
+func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request common.ClientChunkServerReadRequest) error {
 
 	chunk, err := os.Open(strconv.FormatInt(request.ChunkHandle, 10) + ".chunk")
 	if err != nil {
@@ -344,11 +361,11 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 /* ChunkServer->Client */
 func (chunkServer *ChunkServer) writeClientWriteResponse(conn net.Conn) error {
 
-	writeResponse := constants.ClientChunkServerWriteResponse{
+	writeResponse := common.ClientChunkServerWriteResponse{
 		Status: true,
 	}
 
-	responseBytes, err := helper.EncodeMessage(constants.ClientChunkServerWriteResponseType, writeResponse)
+	responseBytes, err := helper.EncodeMessage(common.ClientChunkServerWriteResponseType, writeResponse)
 	if err != nil {
 		return err
 	}
@@ -364,7 +381,7 @@ func (chunkServer *ChunkServer) writeClientWriteResponse(conn net.Conn) error {
 /* Client->ChunkServer */
 func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestBodyBytes []byte) error {
 
-	req, err := helper.DecodeMessage[constants.ClientChunkServerWriteRequest](requestBodyBytes)
+	req, err := helper.DecodeMessage[common.ClientChunkServerWriteRequest](requestBodyBytes)
 	if err != nil {
 		return err
 	}
@@ -398,21 +415,68 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 }
 
 /* Master->ChunkServer */
-func (chunkServer *ChunkServer) handleMasterHeartbeat(conn net.Conn, requestBodyBytes []byte) error {
+func (chunkServer *ChunkServer) handleMasterHeartbeat( requestBodyBytes []byte) error {
 
 	return nil
 }
 
-func (chunkServer *ChunkServer) handleMasterLeaseRequest(conn net.Conn, requestBodyBytes []byte) error {
+/*
+The master grants a chunklease to one of the repli
+cas, which we call the primary. The primary picks a serial
+order for all mutations to the chunk. All replicas follow this
+order when applying mutations. Thus, the global mutation
+order is defined first by the lease grant order chosen by the
+master, and within a lease by the serial numbers assigned
+by the primary.
+The lease mechanism is designed to minimize management overhead at the master. A lease has an initial timeout
+of 60 seconds. However, as long as the chunk is being 
+mutated, the primary can request and typically receive extensions from the master indefinitely.
+These extension requests and grants are piggybacked on the HeartBeat messages regularly
+exchanged between the master and all chunkservers.
+The master may sometimes try to revoke a lease before it expires (e.g., when the master wants to disable mutations
+on a file that is being renamed).
+*/
+
+func (chunkServer *ChunkServer) leaseRequestHandler(){
+	leaseRequests:=make([]int64,0)
+	for _,lease:=range(chunkServer.leaseGrants){
+		if(time.Now().Unix()-chunkServer.leaseUsage[lease.chunkHandle].Unix()<60){
+			leaseRequests=append(leaseRequests, lease.chunkHandle)
+		}
+	}
+
+	heartbeatRequest:=common.MasterChunkServerHeartbeat{
+		LeaseExtensionRequests: leaseRequests,
+	}
+
+	heartBeatBytes,_:=helper.EncodeMessage(common.MasterChunkServerHeartbeatType,heartbeatRequest)
+	chunkServer.masterConnection.Write(heartBeatBytes)
+}
+ 
+func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte){
+	heartBeatResponse,_:=helper.DecodeMessage[common.MasterChunkServerHeartbeatResponse](messageBody)
+	chunkServer.mu.Lock()
+	defer chunkServer.mu.Unlock()
+	for _,lease:=range(heartBeatResponse.LeaseGrants){
+		chunkServer.leaseGrants[lease].grantTime=time.Now()
+	}
+}
+func (chunkServer *ChunkServer) handleMasterLeaseRequest(requestBodyBytes []byte) error {
 	leaseRequest,err:=helper.DecodeMessage[common.MasterChunkServerLeaseRequest](requestBodyBytes)
 	if err!=nil{
 		return err
 	}
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	chunkServer.leaseGrants[leaseRequest.ChunkHandle]=true
+	chunkServer.leaseGrants[leaseRequest.ChunkHandle]=&LeaseGrant{
+		chunkHandle:leaseRequest.ChunkHandle ,
+		granted: true,
+		grantTime: time.Now(),
+	}
 	return nil
 }
+
+
 
 /* ChunkServer->Master */
 func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
@@ -422,14 +486,14 @@ func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
 		return err
 	}
 
-	if (constants.MasterChunkServerHandshakeResponseType) != messageType {
+	if (common.MasterChunkServerHandshakeResponseType) != messageType {
 		return err
 	}
 	return nil
 }
 /* ChunkServer->Master */
 func (chunkServer *ChunkServer) initiateHandshake() error {
-	handshakeBody := constants.MasterChunkServerHandshake{
+	handshakeBody := common.MasterChunkServerHandshake{
 		ChunkIds: chunkServer.chunkIds,
 	}
 
@@ -465,60 +529,35 @@ func (chunkServer *ChunkServer) registerWithMaster() error {
 	return nil
 }
 
-func (chunkServer *ChunkServer) Start() {
-	// Start chunk server
-	listener, err := net.Listen("tcp", ":8081")
-	if err != nil {
-		log.Panicf("Failed to start chunk server: %v", err)
-	}
-	defer listener.Close()
-
-	log.Println("Chunk server listening on :8081")
-
-	// Register with master server
-	if err := chunkServer.registerWithMaster(); err != nil {
-		log.Panicf("Failed to register with master server: %v", err)
-	}
-
-	go chunkServer.handleConnection(chunkServer.masterConnection)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
-			continue
-		}
-		go chunkServer.handleConnection(conn)
-	}
-}
-
 func (chunkServer *ChunkServer) handlePrimaryChunkCommitRequest(conn net.Conn, requestBodyBytes []byte)error {
 	req, err := helper.DecodeMessage[common.PrimaryChunkCommitRequest](requestBodyBytes)
 	if err != nil {
 		return err
 	}
 
-	isPrimary:=chunkServer.checkIfPrimary(req.ChunkHandle)
-	if !isPrimary{
-		response:=common.PrimaryChunkCommitResponse{
-			Offset: -1,
-			Status: false,
-		}
+	// isPrimary:=chunkServer.checkIfPrimary(req.ChunkHandle)
+	// if !isPrimary{
+	// 	response:=common.PrimaryChunkCommitResponse{
+	// 		Offset: -1,
+	// 		Status: false,
+	// 	}
 
-		err=chunkServer.writePrimaryChunkCommitResponse(CommitResponse{conn: conn,commitResponse: response})
-		if err!=nil{
-			return  err
-		}
-
-	}
+	// 	err=chunkServer.writePrimaryChunkCommitResponse(CommitResponse{conn: conn,commitResponse: response})
+	// 	if err!=nil{
+	// 		return  err
+	// 	}
+	// 	return nil
+	// }
 	commitRequest := CommitRequest{
 		conn:          conn,
 		commitRequest: *req,
 	}
 
+	chunkServer.leaseUsage[req.ChunkHandle]=time.Now()
+
 	chunkServer.commitRequestChannel <- commitRequest
 	return nil
 }
-
 func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
@@ -567,12 +606,17 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.MasterChunkServerHeartbeatType:
-			err=chunkServer.handleMasterHeartbeat(conn, messageBody)
+			err=chunkServer.handleMasterHeartbeat( messageBody)
 			if err!=nil{
 				return
 			}
+		case common.MasterChunkServerHeartbeatResponseType:
+			chunkServer.handleMasterHeartbeatResponse(messageBody)
+			// if err!=nil{
+			// 	return
+			// }
 		case common.MasterChunkServerLeaseRequestType:
-			err=chunkServer.handleMasterLeaseRequest(conn,messageBody)
+			err=chunkServer.handleMasterLeaseRequest(messageBody)
 			if err!=nil{
 				return 
 			}
@@ -582,3 +626,29 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 	}
 }
 
+
+func (chunkServer *ChunkServer) Start() {
+	// Start chunk server
+	listener, err := net.Listen("tcp", ":8081")
+	if err != nil {
+		log.Panicf("Failed to start chunk server: %v", err)
+	}
+	defer listener.Close()
+
+	log.Println("Chunk server listening on :8081")
+
+	// Register with master server
+	if err := chunkServer.registerWithMaster(); err != nil {
+		log.Panicf("Failed to register with master server: %v", err)
+	}
+
+	go chunkServer.handleConnection(chunkServer.masterConnection)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("Failed to accept connection: %v", err)
+			continue
+		}
+		go chunkServer.handleConnection(conn)
+	}
+}
