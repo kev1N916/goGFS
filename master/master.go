@@ -1,7 +1,6 @@
 package master
 
 import (
-	"errors"
 	"log"
 	"net"
 	"os"
@@ -16,13 +15,13 @@ import (
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
 	chunkServerConnections []ChunkServerConnection
-	lastCheckpointTime     time.Time
-	lastLogSwitchTime      time.Time
+	LastCheckpointTime     time.Time
+	LastLogSwitchTime      time.Time
 	currentOpLog           *os.File
 	serverList             ServerList
 	idGenerator            *snowflake.Node
 	port                   string
-	leaseGrants            map[int64]string
+	leaseGrants            map[int64]*Lease
 	fileMap                map[string][]Chunk // maps file names to array of chunkIds
 	chunkHandler           map[int64][]string // maps chunkIds to the chunkServers which store those chunks
 	mu                     sync.Mutex
@@ -36,6 +35,10 @@ type Chunk struct {
 type ChunkServerConnection struct {
 	port string
 	conn net.Conn
+}
+type Lease struct {
+	server    string
+	grantTime time.Time
 }
 
 // NewMaster creates and initializes a new Master instance
@@ -98,60 +101,19 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 	return nil
 }
 
-func (master *Master) findChunkServerConnection(server string) net.Conn{
-	for _,connection :=range(master.chunkServerConnections){
-		if (connection.port==server){
-			return connection.conn
-		}
-	}
+func (master *Master) writeMasterDeleteResponse(conn net.Conn, response common.ClientMasterDeleteResponse) error {
 
-	return nil
-}
-func (master *Master) grantLeaseToPrimaryServer(primaryServer string, chunkHandle int64) error {
-	conn := master.findChunkServerConnection(primaryServer)
-	if conn == nil {
-		return errors.New("connection to chunk Server does not exist")
-	}
-
-	grantLeaseRequest := common.MasterChunkServerLeaseRequest{
-		ChunkHandle: chunkHandle,
-	}
-
-	messageBytes, err := helper.EncodeMessage(common.MasterChunkServerLeaseRequestType, grantLeaseRequest)
+	responseBytes, err := helper.EncodeMessage(common.ClientMasterDeleteResponseType, response)
 	if err != nil {
 		return err
 	}
-	_, err = conn.Write(messageBytes)
-	if err != nil {
-		return nil
-	}
-	return nil
-}
 
-func(master *Master) deleteFile(fileName string) error{
-	master.mu.Lock()
-	chunks, ok := master.fileMap[fileName]
-	if !ok{
-		master.mu.Unlock()
-		return errors.New("file does not exist")
-	}
-	delete(master.fileMap,fileName)
-	newFileName:=fileName+"/"+time.Now().String()+"/"+".deleted"
-	master.fileMap[newFileName] = chunks
-	master.mu.Unlock()
-	op:=Operation{
-		Type:        common.ClientMasterDeleteRequestType,
-		File:        fileName,
-		ChunkHandle: -1,
-		NewName: newFileName,
-	}
-	err:=master.writeToOpLog(op)
-	if err!=nil{
+	_, err = conn.Write(responseBytes)
+	if err != nil {
 		return err
 	}
 	return nil
 }
-
 func (master *Master) handleMasterDeleteRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterDeleteRequest](requestBodyBytes)
 	if err != nil {
@@ -159,11 +121,18 @@ func (master *Master) handleMasterDeleteRequest(conn net.Conn, requestBodyBytes 
 		return err
 	}
 
-	err=master.deleteFile(request.Filename)
-	if err!=nil{
+	deleteResponse := common.ClientMasterDeleteResponse{
+		Status: true,
+	}
+	err = master.deleteFile(request.Filename)
+	if err != nil {
+		log.Println("deleting the file failed:", err)
+		deleteResponse.Status = false
+	}
+	err = master.writeMasterDeleteResponse(conn, deleteResponse)
+	if err != nil {
 		return err
 	}
-
 	return nil
 
 }
@@ -194,15 +163,12 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes [
 	}
 	chunkHandle := master.fileMap[request.Filename][len(master.fileMap[request.Filename])-1].ChunkHandle
 	_, chunkServerExists := master.chunkHandler[chunkHandle]
-	// var servers := master.chooseSecondaryServers()
-	var servers []string
 	if !chunkServerExists {
-		master.chunkHandler[chunkHandle] = 	master.chooseSecondaryServers()
+		master.chunkHandler[chunkHandle] = master.chooseSecondaryServers()
 	}
-	servers=master.chunkHandler[chunkHandle]
+
+	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
 	master.mu.Unlock()
-	primaryServer, secondaryServers := master.choosePrimaryAndSecondary(servers)
-	err = master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
 	if err != nil {
 		return err
 	}
@@ -280,11 +246,12 @@ func (master *Master) writeHeartbeat(conn net.Conn, chunksToBeDeleted []int64) {
 	conn.Write(heartbeatResponseInBytes)
 
 }
-func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestBodyBytes []byte) {
+func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestBodyBytes []byte) error {
 	heartBeatResponse, err := helper.DecodeMessage[common.MasterChunkServerHeartbeat](requestBodyBytes)
 	if err != nil {
-		return
+		return err
 	}
+	master.mu.Lock()
 	chunksToBeDeleted := make([]int64, 0)
 	for _, chunkId := range heartBeatResponse.ChunkIds {
 		_, presentOnMaster := master.chunkHandler[chunkId]
@@ -292,15 +259,38 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 			chunksToBeDeleted = append(chunksToBeDeleted, chunkId)
 		}
 	}
+	leaseGrants := make([]int64, 0)
 
 	for _, leaseRequest := range heartBeatResponse.LeaseExtensionRequests {
-		master.leaseGrants[leaseRequest] = conn.RemoteAddr().String()
+		if master.isLeaseValid(master.leaseGrants[leaseRequest], conn.LocalAddr().String()) {
+			master.leaseGrants[leaseRequest].grantTime = time.Now().Add(60 * time.Second)
+			leaseGrants = append(leaseGrants, leaseRequest)
+		}
 	}
 
-	// master.writeHeartbeatResponse(conn, chunksToBeDeleted)
+	master.mu.Unlock()
+
+	heartbeatResponse := common.MasterChunkServerHeartbeatResponse{
+		LeaseGrants:       leaseGrants,
+		ChunksToBeDeleted: chunksToBeDeleted,
+	}
+	return master.writeHeartbeatResponse(conn, heartbeatResponse)
 
 }
 
+func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.MasterChunkServerHeartbeatResponse) error {
+
+	heartbeatResponse, err := helper.EncodeMessage(common.MasterChunkServerHeartbeatResponseType, response)
+	if err != nil {
+		log.Println("Encoding failed:", err)
+		return err
+	}
+	_, err = conn.Write(heartbeatResponse)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 func (master *Master) handleMasterHandshake(conn net.Conn, requestBodyBytes []byte) error {
 	handshake, err := helper.DecodeMessage[common.MasterChunkServerHandshake](requestBodyBytes)
 	if err != nil {
@@ -386,7 +376,10 @@ func (master *Master) handleConnection(conn net.Conn) {
 				return
 			}
 			// Process heartbeat
-			master.handleMasterDeleteRequest(conn, messageBytes)
+			err = master.handleMasterDeleteRequest(conn, messageBytes)
+			if err != nil {
+				return
+			}
 		case common.MasterChunkServerHandshakeType:
 			log.Println("Received MasterChunkServerHandshakeType")
 			// Process handshake
@@ -397,7 +390,10 @@ func (master *Master) handleConnection(conn net.Conn) {
 		case common.MasterChunkServerHeartbeatResponseType:
 			log.Println("Received MasterChunkServerHeartbeatType")
 			// Process heartbeat
-			master.handleChunkServerHeartbeatResponse(conn, messageBytes)
+			err = master.handleChunkServerHeartbeatResponse(conn, messageBytes)
+			if err != nil {
+				return
+			}
 		default:
 			log.Println("Received unknown request type:", messageType)
 		}

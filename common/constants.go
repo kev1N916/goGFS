@@ -22,7 +22,7 @@ const (
 	ClientMasterWriteResponseType
 
 	ClientMasterDeleteRequestType
-
+	ClientMasterDeleteResponseType
 	// ChunkServer-MasterServer Messages
 	MasterChunkServerHandshakeType
 	MasterChunkServerHeartbeatType
@@ -46,13 +46,13 @@ type MasterChunkServerHandshakeResponse struct {
 }
 
 type MasterChunkServerHeartbeat struct {
-	Port                   string
 	ChunkIds               []int64
 	LeaseExtensionRequests []int64
 }
 
 type MasterChunkServerHeartbeatResponse struct {
 	ChunksToBeDeleted []int64
+	LeaseGrants []int64
 }
 
 type MasterChunkServerLeaseRequest struct {
@@ -82,6 +82,10 @@ type ClientMasterDeleteRequest struct {
 	Filename string // Capitalized field name
 }
 
+type ClientMasterDeleteResponse struct {
+	Status bool // Capitalized field name
+}
+
 type ClientMasterWriteResponse struct {
 	ChunkHandle           int64
 	MutationId            int64
@@ -103,7 +107,7 @@ type PrimaryChunkCommitRequest struct {
 
 type PrimaryChunkCommitResponse struct {
 	Offset int64
-	Status bool // 1 if the message was received succefully
+	Status bool // 1 if the commit was succeffuly
 }
 
 type ClientChunkServerReadResponse struct {

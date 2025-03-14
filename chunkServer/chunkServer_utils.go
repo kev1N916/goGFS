@@ -4,12 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"log"
-	"net"
 	"os"
 	"time"
-
-	"github.com/involk-secure-1609/goGFS/common"
-	"github.com/involk-secure-1609/goGFS/helper"
 )
 
 
@@ -95,19 +91,13 @@ func (chunkServer *ChunkServer) loadChunks() {
 }
 
 
-
-func (chunkServer *ChunkServer) handlePrimaryChunkCommitRequest(conn net.Conn, requestBodyBytes []byte) {
-	req, err := helper.DecodeMessage[common.PrimaryChunkCommitRequest](requestBodyBytes)
-	if err != nil {
-		return
-	}
-	commitRequest := CommitRequest{
-		conn:          conn,
-		commitRequest: *req,
-	}
-
-	chunkServer.commitRequestChannel <- commitRequest
+func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool{
+	chunkServer.mu.Lock()
+	defer chunkServer.mu.Unlock()
+	_,isPrimary:=chunkServer.leaseGrants[chunkHandle]
+	return isPrimary
 }
+
 // func (chunk *ChunkServer) addTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {
 // 	err := conn.SetDeadline(time.Now().Add(interval))
 // 	return err
@@ -117,13 +107,13 @@ func (chunkServer *ChunkServer) handlePrimaryChunkCommitRequest(conn net.Conn, r
 func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 
 	log.Printf("Processing batch of %d commit requests", len(requests))
-	chunkServer.chunkServerMu.Lock()
+	chunkServer.mu.Lock()
 	// Group requests by chunk ID for more efficient processing
 	chunkBatches := make(map[int64][]CommitRequest)
 	for _, req := range requests {
 		chunkBatches[req.commitRequest.ChunkHandle] = append(chunkBatches[req.commitRequest.ChunkHandle], req)
 	}
-	chunkServer.chunkServerMu.Unlock()
+	chunkServer.mu.Unlock()
 
 	for key, value := range chunkBatches {
 		go chunkServer.handleChunkPrimaryCommit(key, value)

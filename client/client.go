@@ -370,3 +370,55 @@ func (client *Client) replicateChunkToAllServers(writeResponse common.ClientMast
 	return nil
 
 }
+
+/* Client Delete Operations */
+
+
+func (client *Client) sendDeleteRequestToMaster(deleteRequest common.ClientMasterDeleteRequest) error{
+	conn, dialErr := net.Dial("tcp", client.masterServer)
+	if dialErr != nil {
+		return errors.New("failed to dial master server") 
+	}
+	defer conn.Close() 
+
+	requestBytes, serializeErr := helper.EncodeMessage(common.ClientMasterDeleteRequestType,deleteRequest)
+	if serializeErr != nil {
+		return errors.New("failed to serialize read request") // Wrap error
+	}
+
+	_, writeErr := conn.Write(requestBytes)
+	if writeErr != nil {
+		return errors.New("failed to write read request to connection") // Wrap error
+	}
+
+	messageType,messageBody,err:=helper.ReadMessage(conn)
+	if err!=nil{
+		return err
+	}
+	if messageType!=common.ClientMasterDeleteResponseType{
+		return fmt.Errorf("expected response type %d but got %d",common.PrimaryChunkCommitResponseType,messageType)
+	}
+
+	response,err:=helper.DecodeMessage[common.ClientMasterDeleteResponse](messageBody)
+	if err!=nil{
+		return err
+	}
+	if !response.Status{
+		return errors.New("delete operation unsuccessful")
+	}
+	return nil
+}
+
+// func (client *Client) readDeleteResposnse
+func(client *Client) Delete(fileName string) error{
+
+	deleteRequest:=common.ClientMasterDeleteRequest{
+		Filename: fileName,
+	}
+
+	err:=client.sendDeleteRequestToMaster(deleteRequest)
+	if err!=nil{
+		return err
+	}
+	return nil
+}
