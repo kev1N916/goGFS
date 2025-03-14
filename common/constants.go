@@ -21,11 +21,14 @@ const (
 	ClientMasterWriteRequestType
 	ClientMasterWriteResponseType
 
+	ClientMasterDeleteRequestType
+
 	// ChunkServer-MasterServer Messages
 	MasterChunkServerHandshakeType
 	MasterChunkServerHeartbeatType
 	MasterChunkServerHandshakeResponseType
 	MasterChunkServerHeartbeatResponseType
+	MasterChunkServerLeaseRequestType
 
 	PrimaryChunkCommitRequestType
     PrimaryChunkCommitResponseType
@@ -51,6 +54,10 @@ type MasterChunkServerHeartbeat struct {
 type MasterChunkServerHeartbeatResponse struct {
 	ChunksToBeDeleted []int64
 }
+
+type MasterChunkServerLeaseRequest struct {
+	ChunkHandle int64
+}
 type ClientMasterReadRequest struct {
 	Filename string // Capitalized field name
 	Offset   int    // Capitalized field name
@@ -68,6 +75,10 @@ type ClientMasterReadResponse struct {
 }
 
 type ClientMasterWriteRequest struct {
+	Filename string // Capitalized field name
+}
+
+type ClientMasterDeleteRequest struct {
 	Filename string // Capitalized field name
 }
 

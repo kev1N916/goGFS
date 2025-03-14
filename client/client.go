@@ -29,7 +29,7 @@ func NewClient(masterServer string) *Client {
 }
 
 
-/** CLIENT READ OPERATIONS **/
+/* CLIENT READ OPERATIONS */
 
 /* Client->Master Operation*/
 func (client *Client) readFromMasterServer(readRequest common.ClientMasterReadRequest) (*common.ClientMasterReadResponse, error) {
@@ -153,7 +153,7 @@ func (client *Client) Read(filename string, offset int) error {
 }
 
 
-/** CLIENT WRITE OPERATIONS **/
+/* CLIENT WRITE OPERATIONS */
 
 
 /* Client->Master Operation*/
@@ -370,4 +370,3 @@ func (client *Client) replicateChunkToAllServers(writeResponse common.ClientMast
 	return nil
 
 }
-

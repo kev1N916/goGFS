@@ -2,9 +2,8 @@ package master
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
-	"encoding/gob"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,21 +11,21 @@ import (
 	"time"
 )
 
-type FileChunkMapping struct {
+type Operation struct {
+	Type        int
 	File        string
 	ChunkHandle int64
+	NewName string
 }
 
-func (master *Master) writeToOpLog(opsToLog []FileChunkMapping) error {
-	// Write each operation to the log
-	for _, op := range opsToLog {
-		// Format the operation as a line in the log
-		// We could use JSON or another format, but for simplicity:
-		logLine := fmt.Sprintf("%s:%d\n", op.File, op.ChunkHandle)
+func (master *Master) writeToOpLog(op Operation) error {
+	master.opLogMu.Lock()
+	defer master.opLogMu.Unlock()
 
-		if _, err := master.currentOpLog.WriteString(logLine); err != nil {
-			return err
-		}
+	logLine := fmt.Sprintf("%d:%s:%d:%s\n", op.Type,op.File, op.ChunkHandle,op.NewName)
+
+	if _, err := master.currentOpLog.WriteString(logLine); err != nil {
+		return err
 	}
 	// Ensure data is written to disk
 	return master.currentOpLog.Sync()
@@ -41,51 +40,67 @@ func (master *Master) recover() error {
 			return err
 		}
 		fileSize := fileInfo.Size()
-		
+
 		// Read the totalMappings count (last 8 bytes of the file)
-		countBuf := make([]byte, 8)
-		_, err = checkpoint.ReadAt(countBuf, fileSize-8)
+		countBuf := make([]byte, 4)
+		_, err = checkpoint.ReadAt(countBuf, fileSize-4)
 		if err != nil {
 			return err
 		}
-		
+
 		// Convert bytes to int64
-		totalMappings := int(binary.LittleEndian.Uint64(countBuf))
-		
+		totalMappings := binary.LittleEndian.Uint32(countBuf)
+
 		// Now read the actual mapping data
-		mappingData := make([]byte, fileSize-8)
+		mappingData := make([]byte, fileSize-4)
 		_, err = checkpoint.ReadAt(mappingData, 0)
 		if err != nil {
 			return err
 		}
-		
-		// Create a decoder for the mappings
-		buf := bytes.NewBuffer(mappingData)
-		decoder := gob.NewDecoder(buf)
-		
+
+		// // Create a decoder for the mappings
+		// buf := bytes.NewBuffer(mappingData)
+		// decoder := gob.NewDecoder(buf)
+
 		// Lock for state updates
 		master.mu.Lock()
-		
+
 		// Clear existing state
 		master.fileMap = make(map[string][]Chunk)
-		
+
 		// Decode each mapping
-		for range totalMappings {
-			var mapping FileChunkMapping
-			if err := decoder.Decode(&mapping); err != nil {
-				return err
+		for i := 0; i < int(totalMappings); i++ {
+			offset := 0
+    
+			// Decode file length
+			fileLen := binary.BigEndian.Uint16(mappingData[offset:offset+2])
+			offset += 2
+			
+			// Check if there's enough data for the file
+			if len(mappingData) < int(2+fileLen+2) {
+				return  errors.New("data too short for file content")
 			}
 			
-			// Add to master's state
-			chunk := Chunk{
-				ChunkHandle: mapping.ChunkHandle,
-				// Set other properties as needed
+			// Decode file string
+			file := string(mappingData[offset:offset+int(fileLen)])
+			offset += int(fileLen)
+			
+			// Decode chunks length
+			chunksLen := binary.BigEndian.Uint16(mappingData[offset:offset+2])
+			offset += 2
+			
+			// Check if there's enough data for the chunks
+			if len(mappingData) < int(2+fileLen+2+chunksLen*8) {
+				return errors.New("data too short for chunks content")
 			}
 			
-			if _, exists := master.fileMap[mapping.File]; !exists {
-				master.fileMap[mapping.File] = []Chunk{}
+			// Decode chunks
+			chunks := make([]Chunk, chunksLen)
+			for i := 0; i < int(chunksLen); i++ {
+				chunks[i].ChunkHandle = int64(binary.BigEndian.Uint64(mappingData[offset:offset+8]))
+				offset += 8
 			}
-			master.fileMap[mapping.File] = append(master.fileMap[mapping.File], chunk)
+			master.fileMap[file]=chunks
 		}
 		master.mu.Unlock()
 		return nil
@@ -110,7 +125,7 @@ func (master *Master) recover() error {
 		line := scanner.Text()
 		// Parse the line to get file and chunk handle
 		parts := strings.Split(line, ":")
-		if len(parts) == 2 {
+		if len(parts) == 4 {
 			file := parts[0]
 			chunkHandle, _ := strconv.ParseInt(parts[1], 10, 64)
 
@@ -121,17 +136,39 @@ func (master *Master) recover() error {
 
 	return nil
 }
-
+func encodeFileAndChunks(file string, chunks []Chunk) []byte {
+    // Calculate the total buffer size needed
+    // 2 bytes for file length + file bytes + 2 bytes for chunks length + 8 bytes per chunk
+    totalSize := 2 + len(file) + 2 + len(chunks)*8
+    buffer := make([]byte, totalSize)
+    
+    offset := 0
+    
+    // Encode file length as 16-bit number (2 bytes)
+    fileLen := uint16(len(file))
+    binary.BigEndian.PutUint16(buffer[offset:offset+2], fileLen)
+    offset += 2
+    
+    // Encode file string as bytes
+    copy(buffer[offset:offset+len(file)], file)
+    offset += len(file)
+    
+    // Encode number of chunks as 16-bit number (2 bytes)
+    chunksLen := uint16(len(chunks))
+    binary.BigEndian.PutUint16(buffer[offset:offset+2], chunksLen)
+    offset += 2
+    
+    // Encode each 64-bit chunk
+    for _, chunk := range chunks {
+        binary.BigEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkHandle))
+        offset += 8
+    }
+    
+    return buffer
+}
 func (master *Master) buildCheckpoint() error {
 	// Start a new goroutine to build the checkpoint without blocking mutations
 	go func() {
-		// First, switch to a new log file
-		err := master.switchOpLog()
-		if err != nil {
-			// Handle error
-			return
-		}
-
 		// Create a temporary checkpoint file
 		tempCpFile, err := os.Create("checkpoint.tmp")
 		if err != nil {
@@ -142,52 +179,44 @@ func (master *Master) buildCheckpoint() error {
 
 		// Lock the master's state to get a consistent snapshot
 		master.mu.Lock()
-		fileChunks := make([]byte, 0)
-		// Encode using gob
-		var buf bytes.Buffer
-		encoder := gob.NewEncoder(&buf)
+	
 		totalMappings := 0
+		fileChunks:=make([]byte,0)
 		for file, chunks := range master.fileMap {
-			for _, chunk := range chunks {
-				fileChunk := FileChunkMapping{
-					File:        file,
-					ChunkHandle: chunk.ChunkHandle,
-				}
-				err := encoder.Encode(fileChunk)
-				if err != nil {
-					return
-				}
-				fileChunks = append(fileChunks, buf.Bytes()...)
-				totalMappings++
-				buf.Reset()
-			}
+			totalMappings++
+			fileBytes:=encodeFileAndChunks(file,chunks)
+			fileChunks=append(fileChunks,fileBytes...)
 		}
 
 		master.mu.Unlock()
 
-		// Write the checkpoint data to the temporary file
-		bytesWritten, err := tempCpFile.Write(fileChunks)
+		fileChunks,err = binary.Append(fileChunks,binary.LittleEndian, uint32(totalMappings))
 		if err != nil {
 			return
 		}
-
-		err = binary.Write(&buf, binary.LittleEndian, int64(totalMappings))
-		if err != nil {
-			return
-		}
-		_, err = tempCpFile.WriteAt(buf.Bytes(), int64(bytesWritten))
+		_, err = tempCpFile.WriteAt(fileChunks,0)
 		if err != nil {
 			return
 		}
 
 		// Ensure data is written to disk
-		tempCpFile.Sync()
+		err=tempCpFile.Sync()
+		if err!=nil{
+			return
+		}
 
 		// Rename the temporary file to the actual checkpoint file
 		os.Rename("checkpoint.tmp", "checkpoint.chk")
 
 		// Update the checkpoint sequence number or timestamp
 		master.lastCheckpointTime = time.Now()
+
+		err = master.switchOpLog()
+		if err != nil {
+			// Handle error
+			return
+		}
+
 	}()
 
 	return nil
