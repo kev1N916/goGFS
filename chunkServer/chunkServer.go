@@ -225,6 +225,20 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	return nil
 }
 
+func(chunkServer *ChunkServer) handleChunkExceedsMaxSize(requests []CommitRequest) error{
+	response:=common.PrimaryChunkCommitResponse{
+		Offset: -1,
+		Status: true,
+		ErrorMessage: "chunk full try again with new Chunk",
+	}
+
+	for _, value := range requests {		
+		go chunkServer.writePrimaryChunkCommitResponse(CommitResponse{conn: value.conn,commitResponse: response})
+	}
+
+	return nil
+}
+
 /* Client->ChunkServer Request */
 func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requests []CommitRequest) error {
 	// response := common.PrimaryChunkCommitResponse{
@@ -232,6 +246,10 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	// 	Status: true,
 	// }
 
+	totalCommitSize:=0
+	for _,commit:=range(requests){
+		totalCommitSize+=commit.commitRequest.SizeOfData
+	}
 	secondaryServers := requests[0].commitRequest.SecondaryServers
 	chunk, err := os.OpenFile(strconv.FormatInt(chunkHandle, 10)+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
@@ -247,6 +265,9 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 
 	chunkOffset := chunkInfo.Size()
 
+	if(chunkOffset+int64(totalCommitSize)>common.ChunkSize){
+		return chunkServer.handleChunkExceedsMaxSize(requests)
+	}
 	successfullWrites := make([]CommitResponse, 0)
 	unsucessfullWrites := make([]CommitResponse, 0)
 
@@ -262,6 +283,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 				commitResponse: common.PrimaryChunkCommitResponse{
 					Offset: -1,
 					Status: false,
+					ErrorMessage: "failed to write data",
 				},
 			})
 			continue
@@ -271,6 +293,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 			commitResponse: common.PrimaryChunkCommitResponse{
 				Offset: chunkOffset,
 				Status: true,
+				ErrorMessage: "data has successfully been written",
 			},
 		})
 		mutationOrder = append(mutationOrder, value.commitRequest.MutationId)
@@ -289,17 +312,18 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		if err != nil {
 			for _, value := range successfullWrites {
 				value.commitResponse.Status = false
+				value.commitResponse.ErrorMessage="failed to write data"
 				value.commitResponse.Offset=-1
 			}
 		}
 	}
 
 	for _, value := range successfullWrites {
-		chunkServer.writePrimaryChunkCommitResponse(value)
+		go chunkServer.writePrimaryChunkCommitResponse(value)
 	}
 
 	for _, value := range unsucessfullWrites {
-		chunkServer.writePrimaryChunkCommitResponse(value)
+		go chunkServer.writePrimaryChunkCommitResponse(value)
 	}
 
 	return nil
@@ -359,11 +383,7 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 }
 
 /* ChunkServer->Client */
-func (chunkServer *ChunkServer) writeClientWriteResponse(conn net.Conn) error {
-
-	writeResponse := common.ClientChunkServerWriteResponse{
-		Status: true,
-	}
+func (chunkServer *ChunkServer) writeClientWriteResponse(conn net.Conn,writeResponse common.ClientChunkServerWriteResponse) error {
 
 	responseBytes, err := helper.EncodeMessage(common.ClientChunkServerWriteResponseType, writeResponse)
 	if err != nil {
@@ -385,6 +405,8 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 	if err != nil {
 		return err
 	}
+
+	
 	// Read file size
 	sizeBuf := make([]byte, 8)
 	_, err = io.ReadFull(conn, sizeBuf)
@@ -402,12 +424,17 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 	if err != nil {
 		return err
 	}
+	writeResponse:=common.ClientChunkServerWriteResponse{
+			Status: true,
+			ErrorMessage: "",
+		}
 	err = chunkServer.writeChunkToCache(req.MutationId, chunkData)
 	if err != nil {
-		return err
+		writeResponse.ErrorMessage="error while writing chunk on chunkServer"
+		writeResponse.Status=false
 	}
 
-	err = chunkServer.writeClientWriteResponse(conn)
+	err = chunkServer.writeClientWriteResponse(conn,writeResponse)
 	if err != nil {
 		return err
 	}
@@ -553,7 +580,7 @@ func (chunkServer *ChunkServer) handlePrimaryChunkCommitRequest(conn net.Conn, r
 		commitRequest: *req,
 	}
 
-	chunkServer.leaseUsage[req.ChunkHandle]=time.Now()
+	// chunkServer.leaseUsage[req.ChunkHandle]=time.Now()
 
 	chunkServer.commitRequestChannel <- commitRequest
 	return nil

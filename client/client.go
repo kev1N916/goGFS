@@ -85,14 +85,12 @@ func (client *Client) readFromChunkServer(readResponse *common.ClientMasterReadR
 		requestBytes, serializeErr := helper.EncodeMessage(common.ClientChunkServerReadRequestType,chunkServerReadRequest)
 
 		if serializeErr != nil {
-			continue
-			// return fmt.Errorf("failed to serialize read request: %w", serializeErr) // Wrap error
+			return nil,errors.New("error during encoding of message")
 		}
 
 		bytesWritten, writeErr := conn.Write(requestBytes)
 		if writeErr != nil {
-			continue 
-			// return fmt.Errorf("failed to write read request to connection: %w", writeErr) // Wrap error
+			return nil,writeErr
 		}
 		log.Printf("Bytes written for request: %d", bytesWritten) // More descriptive log
 
@@ -100,9 +98,7 @@ func (client *Client) readFromChunkServer(readResponse *common.ClientMasterReadR
 		sizeBuf := make([]byte, 8)
 		_, err := io.ReadFull(conn, sizeBuf)
 		if err != nil {
-			continue
-			// fmt.Println("Error reading file size:", err)
-			// return err
+			return nil,err
 		}
 
 		fileSize := binary.LittleEndian.Uint64(sizeBuf)
@@ -113,9 +109,7 @@ func (client *Client) readFromChunkServer(readResponse *common.ClientMasterReadR
 		// Read file contents from connection into the byte array
 		bytesReceived, err := io.ReadFull(conn, fileData)
 		if err != nil {
-			continue
-			// fmt.Println("Error receiving file data:", err)
-			// return nil, err
+			return nil,err
 		}
 
 		log.Printf("File received successfully. %d bytes read\n", bytesReceived)
@@ -139,8 +133,8 @@ func (client *Client) Read(filename string, offset int) error {
 		return err
 	}
 
-	if(readResponse.Error!=""){
-		return errors.New(readResponse.Error)
+	if(readResponse.ErrorMessage!=""){
+		return errors.New(readResponse.ErrorMessage)
 	}
 	client.cacheChunkServers(readResponse.ChunkHandle, readResponse)
 
@@ -313,12 +307,33 @@ func (client *Client) sendWriteRequestToPrimary(port string,writeRequestToPrimar
 	}
 
 	if !responseBody.Status{
-		return fmt.Errorf("primary chunk commit failed")
+		return errors.New(responseBody.ErrorMessage)
 	}
+	// if responseBody.Status && responseBody.ErrorMessage=="chunk full try again with new Chunk"{
+
+	// }
 	return nil
 
 }
 
+func (client *Client) createNewChunkForFile(filename string)error{
+
+	newChunkRequest:=common.ClientMasterCreateNewChunkRequest{
+		Filename: filename,
+	}
+
+	requestBytes,_:=helper.EncodeMessage(common.ClientMasterCreateNewChunkRequestType,newChunkRequest)
+	conn, err := net.Dial("tcp", client.masterServer)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_,err=conn.Write(requestBytes)
+	if err!=nil{
+		return err
+	}
+	return nil
+}
 func (client *Client) Write(filename string,data []byte) error {
 
 	masterWriteRequest := common.ClientMasterWriteRequest{
@@ -339,9 +354,20 @@ func (client *Client) Write(filename string,data []byte) error {
 		ChunkHandle: writeResponse.ChunkHandle,
 		MutationId: writeResponse.MutationId,
 		SecondaryServers: writeResponse.SecondaryChunkServers,
+		SizeOfData:int(len(data)),
 	}
 	err=client.sendWriteRequestToPrimary(writeResponse.PrimaryChunkServer,writeRequestToPrimary)
 	if err!=nil{
+		if(err.Error()=="chunk full try again with new Chunk"){
+			err=client.createNewChunkForFile(filename)
+			if err!=nil{
+				return err
+			}
+			err=client.Write(filename,data)
+			if err!=nil{
+				return err
+			}
+		}
 		return err
 	}
 	

@@ -23,6 +23,9 @@ const (
 
 	ClientMasterDeleteRequestType
 	ClientMasterDeleteResponseType
+	ClientMasterCreateNewChunkRequestType
+	ClientMasterCreateNewChunkResponseType
+
 	// ChunkServer-MasterServer Messages
 	MasterChunkServerHandshakeType
 	MasterChunkServerHeartbeatType
@@ -53,6 +56,7 @@ type MasterChunkServerHeartbeat struct {
 type MasterChunkServerHeartbeatResponse struct {
 	ChunksToBeDeleted []int64
 	LeaseGrants []int64
+	ErrorMessage string
 }
 
 type MasterChunkServerLeaseRequest struct {
@@ -63,6 +67,15 @@ type ClientMasterReadRequest struct {
 	Offset   int    // Capitalized field name
 }
 
+type ClientMasterCreateNewChunkRequest struct{
+	Filename string
+}
+
+type ClientMasterCreateNewChunkResponse struct{
+	Filename string
+}
+
+
 // type UnserializedResponse struct {
 // 	MessageType       MessageType // Capitalized field name
 // 	ResponseBodyBytes []byte      // Capitalized field name
@@ -71,7 +84,7 @@ type ClientMasterReadRequest struct {
 type ClientMasterReadResponse struct {
 	ChunkHandle  int64    // Capitalized field name
 	ChunkServers []string // Capitalized field name
-	Error string
+	ErrorMessage string
 }
 
 type ClientMasterWriteRequest struct {
@@ -84,6 +97,8 @@ type ClientMasterDeleteRequest struct {
 
 type ClientMasterDeleteResponse struct {
 	Status bool // Capitalized field name
+	ErrorMessage string
+
 }
 
 type ClientMasterWriteResponse struct {
@@ -91,6 +106,7 @@ type ClientMasterWriteResponse struct {
 	MutationId            int64
 	PrimaryChunkServer    string   // Capitalized field name
 	SecondaryChunkServers []string // Capitalized field name
+	ErrorMessage string
 }
 
 type ClientChunkServerReadRequest struct {
@@ -103,19 +119,24 @@ type PrimaryChunkCommitRequest struct {
 	ChunkHandle int64 // ID of the chunk to commit
 	MutationId  int64 // ID of the mutation
     SecondaryServers []string // List of secondary servers
+	SizeOfData int
 }
 
 type PrimaryChunkCommitResponse struct {
 	Offset int64
 	Status bool // 1 if the commit was succeffuly
+	ErrorMessage string
 }
 
 type ClientChunkServerReadResponse struct {
 	ResponseLength int32 // Capitalized field name
+	ErrorMessage string
 }
 
 type ClientChunkServerWriteResponse struct {
 	Status bool // 1 if the message was received succefully
+	ErrorMessage string
+
 }
 
 type InterChunkServerCommitRequest struct{
@@ -127,6 +148,7 @@ type InterChunkServerCommitRequest struct{
 
 type InterChunkServerCommitResponse struct{
 	Status bool
+	ErrorMessage string
 }
 type ClientChunkServerWriteRequest struct {
 	MutationId int64

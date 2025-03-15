@@ -49,12 +49,14 @@ func NewMaster(port string) (*Master, error) {
 		return nil, err
 	}
 	return &Master{
+		chunkServerConnections: make([]ChunkServerConnection, 0),
 		currentOpLog: opLogFile,
 		serverList:   make(ServerList, 0),
 		idGenerator:  node,
 		port:         port,
 		fileMap:      make(map[string][]Chunk),
 		chunkHandler: make(map[int64][]string),
+		leaseGrants: make(map[int64]*Lease),
 	}, nil
 }
 func (master *Master) writeMasterReadResponse(conn net.Conn, readResponse common.ClientMasterReadResponse) error {
@@ -80,7 +82,7 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 		return err
 	}
 	readResponse := common.ClientMasterReadResponse{
-		Error:        "file not found",
+		ErrorMessage:        "file not found",
 		ChunkHandle:  -1,
 		ChunkServers: make([]string, 0),
 	}
@@ -96,7 +98,7 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 	master.mu.Unlock()
 	readResponse.ChunkHandle = chunk.ChunkHandle
 	readResponse.ChunkServers = chunkServers
-	readResponse.Error = ""
+	readResponse.ErrorMessage = ""
 	master.writeMasterReadResponse(conn, readResponse)
 	return nil
 }
@@ -340,14 +342,12 @@ func (master *Master) Start() error {
 		go master.handleConnection(conn)
 	}
 }
-
-func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byte) error {
-	leaseRequest, err := helper.DecodeMessage[common.MasterChunkServerLeaseRequest](messageBytes)
+func (master *Master) handleCreateNewChunkRequest(conn net.Conn,messageBytes []byte)error{
+	newChunkRequest, err := helper.DecodeMessage[common.ClientMasterCreateNewChunkRequest](messageBytes)
 	if err != nil {
 		return err
 	}
-	// master
-	master.leaseGrants[leaseRequest.ChunkHandle].grantTime = master.leaseGrants[leaseRequest.ChunkHandle].grantTime.Add(30 * time.Second)
+	master.createNewChunk(newChunkRequest.Filename)
 	return nil
 }
 func (master *Master) handleConnection(conn net.Conn) {
@@ -361,6 +361,17 @@ func (master *Master) handleConnection(conn net.Conn) {
 
 		// Process the request based on type
 		switch messageType {
+		case common.ClientMasterCreateNewChunkRequestType:
+			log.Println("Received ClientMasterNewChunkRequestType")
+			// Process read request
+			err = helper.AddTimeoutForTheConnection(conn, 20*time.Second)
+			if err != nil {
+				return
+			}
+			err = master.handleCreateNewChunkRequest(conn, messageBytes)
+			if err != nil {
+				return
+			}
 		case common.ClientMasterReadRequestType:
 			log.Println("Received MasterReadRequestType")
 			// Process read request

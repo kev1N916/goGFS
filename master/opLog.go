@@ -68,18 +68,18 @@ func (master *Master) recover() error {
 			return err
 		}
 
-		err=master.readCheckpoint(checkPointData,int64(totalMappings))
+		err = master.readCheckpoint(checkPointData, int64(totalMappings))
 		return err
 	}
 
-	err=master.readOpLog()
-	if err!=nil{
+	err = master.readOpLog()
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (master *Master) readCheckpoint(checkpointBytes []byte,totalMappings int64) error{
+func (master *Master) readCheckpoint(checkpointBytes []byte, totalMappings int64) error {
 	master.mu.Lock()
 
 	// Clear existing state
@@ -135,7 +135,7 @@ func (master *Master) readCheckpoint(checkpointBytes []byte,totalMappings int64)
 	master.mu.Unlock()
 	return nil
 }
-func (master *Master) readOpLog() error{
+func (master *Master) readOpLog() error {
 	master.opLogMu.Lock()
 	defer master.opLogMu.Unlock()
 	// Read and apply each operation from the log
@@ -155,10 +155,10 @@ func (master *Master) readOpLog() error{
 				master.addFileChunkMapping(fileName, chunkHandle)
 			case "TempDelete":
 				master.tempDeleteFile(fileName, newFileName)
-			default :
-			return errors.New("undefined commands")
+			default:
+				return errors.New("undefined commands")
 			}
-		}else{
+		} else {
 			return errors.New("undefined format of log")
 		}
 	}
@@ -194,7 +194,6 @@ func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 
 	return buffer
 }
-
 
 func (master *Master) buildCheckpoint() error {
 	// Start a new goroutine to build the checkpoint without blocking mutations
@@ -252,7 +251,7 @@ func (master *Master) buildCheckpoint() error {
 	return nil
 }
 
-// Helper function to switch to a new operation log file
+// Helper function to switch to a new operation log file 
 func (master *Master) switchOpLog() error {
 	master.opLogMu.Lock()
 	defer master.opLogMu.Unlock()

@@ -91,23 +91,20 @@ func (chunkServer *ChunkServer) loadChunks() {
 }
 
 
-func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool{
-	chunkServer.mu.Lock()
-	defer chunkServer.mu.Unlock()
-	leaseGrant,isPrimary:=chunkServer.leaseGrants[chunkHandle]
-	if(!isPrimary){
-		return false
-	}
-	if(time.Since(leaseGrant.grantTime)>=60*time.Second){
-		return false
-	}
-	return true
-}
-
-// func (chunk *ChunkServer) addTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {
-// 	err := conn.SetDeadline(time.Now().Add(interval))
-// 	return err
+// func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool{
+// 	chunkServer.mu.Lock()
+// 	defer chunkServer.mu.Unlock()
+// 	leaseGrant,isPrimary:=chunkServer.leaseGrants[chunkHandle]
+// 	if(!isPrimary){
+// 		return false
+// 	}
+// 	if(time.Since(leaseGrant.grantTime)>=60*time.Second){
+// 		return false
+// 	}
+// 	return true
 // }
+
+
 
 // processCommitBatch handles a batch of commit requests
 func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {

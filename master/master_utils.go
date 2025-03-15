@@ -11,8 +11,8 @@ import (
 )
 
 func (master *Master) chooseSecondaryServers() []string {
-	master.mu.Lock()
-	defer master.mu.Unlock()
+	// master.mu.Lock()
+	// defer master.mu.Unlock()
 	servers := make([]string, 0)
 	for i := range 3 {
 		server := master.serverList[i]
@@ -166,6 +166,27 @@ func (master *Master) addFileChunkMapping(file string, chunkHandle int64) {
 	defer master.mu.Unlock()
 	master.fileMap[file] = append(master.fileMap[file], Chunk{ChunkHandle: chunkHandle})
 
+}
+
+func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byte) error {
+	leaseRequest, err := helper.DecodeMessage[common.MasterChunkServerLeaseRequest](messageBytes)
+	if err != nil {
+		return err
+	}
+	// master
+	master.leaseGrants[leaseRequest.ChunkHandle].grantTime = master.leaseGrants[leaseRequest.ChunkHandle].grantTime.Add(30 * time.Second)
+	return nil
+}
+
+func (master *Master) createNewChunk(fileName string) {
+	chunk := Chunk{
+		ChunkHandle: master.generateNewChunkId(),
+		ChunkSize:   0,
+	}
+	master.mu.Lock()
+	defer master.mu.Unlock()
+
+	master.fileMap[fileName]=append(master.fileMap[fileName], chunk)
 }
 
 func (master *Master) tempDeleteFile(fileName string,newName string){
