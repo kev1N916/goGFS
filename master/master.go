@@ -145,59 +145,85 @@ func (master *Master) handleMasterDeleteRequest(conn net.Conn, requestBodyBytes 
 
 }
 
+func (master *Master) handleChunkCreation(fileName string) (int64,string,[]string,error){
+	// opsToLog := make([], 0)
+	op := Operation{
+		Type:        common.ClientMasterWriteRequestType,
+		File:       fileName,
+		ChunkHandle: -1,
+	}
+	master.mu.Lock()
+	defer master.mu.Unlock()
 
+	// if the file does not exist the master creates a new one and 
+	// creates a new chunk for that file
+	_, fileAlreadyExists := master.fileMap[fileName]
+	if !fileAlreadyExists {
+		master.fileMap[fileName] = make([]Chunk, 0)
+		chunk := Chunk{
+			ChunkHandle: master.generateNewChunkId(),
+			ChunkSize:   0,
+		}
+		op.ChunkHandle = chunk.ChunkHandle
+		master.fileMap[fileName] = append(master.fileMap[fileName], chunk)
+	}
+	chunkHandle := master.fileMap[fileName][len(master.fileMap[fileName])-1].ChunkHandle
+	// if chunk servers have not been designated for the chunkHandle then we choose them
+	_, chunkServerExists := master.chunkHandler[chunkHandle]
+	if !chunkServerExists {
+		master.chunkHandler[chunkHandle] = master.chooseChunkServers()
+	}
+	if op.ChunkHandle != -1 {
+		// log the operation if it has resulted in a new Chunk creation otherwise there is no need to log it
+		err := master.writeToOpLog(op)
+		if err != nil {
+			return -1,"",nil,err
+		}
+	}
+	// assign primary and secondary chunkServers
+	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
+	if err != nil {
+		return -1,"",nil,err
+	}
+	// writeResponse := common.ClientMasterWriteResponse{
+	// 	ChunkHandle:           chunkHandle,
+	// 	// a mutationId is generated so that during the commit request we can mantain an order 
+	// 	// between concurrent requests
+	// 	MutationId:            master.idGenerator.Generate().Int64(),
+	// 	PrimaryChunkServer:    primaryServer,
+	// 	SecondaryChunkServers: secondaryServers,
+	// }
+	return chunkHandle,primaryServer,secondaryServers,nil
+
+
+}
 // the client write request only consists of the file to which the client wants to mutate.
-// the master 
+// the master , if the file does not have any chunks associated with it , we create a new one and 
+// log this creation, after that we assign secondary chunk servers for this chunk. Then we choose 
+// primary and secondary servers from these chunk Servers.
 func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterWriteRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Decoding failed:", err)
 		return err
 	}
-
-	// opsToLog := make([], 0)
-	op := Operation{
-		Type:        common.ClientMasterWriteRequestType,
-		File:        request.Filename,
-		ChunkHandle: -1,
-	}
-	master.mu.Lock()
-	// if the file does not exist the master creates a new one and 
-	// creates a new chunk for that file
-	_, fileAlreadyExists := master.fileMap[request.Filename]
-	if !fileAlreadyExists {
-		master.fileMap[request.Filename] = make([]Chunk, 0)
-		chunk := Chunk{
-			ChunkHandle: master.generateNewChunkId(),
-			ChunkSize:   0,
-		}
-		op.ChunkHandle = chunk.ChunkHandle
-		master.fileMap[request.Filename] = append(master.fileMap[request.Filename], chunk)
-	}
-	chunkHandle := master.fileMap[request.Filename][len(master.fileMap[request.Filename])-1].ChunkHandle
-	// if chunk servers have not been designated for the chunkHandle then we choose them
-	_, chunkServerExists := master.chunkHandler[chunkHandle]
-	if !chunkServerExists {
-		master.chunkHandler[chunkHandle] = master.chooseChunkServers()
-	}
-
-	// assign primary and secondary chunkServers
-	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
-	master.mu.Unlock()
-	if err != nil {
-		return err
-	}
 	writeResponse := common.ClientMasterWriteResponse{
-		ChunkHandle:           chunkHandle,
-		MutationId:            master.idGenerator.Generate().Int64(),
-		PrimaryChunkServer:    primaryServer,
-		SecondaryChunkServers: secondaryServers,
+		ChunkHandle:           -1,
+		// a mutationId is generated so that during the commit request we can mantain an order 
+		// between concurrent requests
+		MutationId:            -1,
+		PrimaryChunkServer:    "",
+		SecondaryChunkServers: make([]string, 0),
+		ErrorMessage: "error during write request on master ",
 	}
-	if op.ChunkHandle != -1 {
-		// log the operation if it has resulted in a new Chunk creation otherwise there is no need to log it
-		err = master.writeToOpLog(op)
-		if err != nil {
-			return err
+	chunkHandle,primaryServer,secondaryServers,err:=master.handleChunkCreation(request.Filename)
+	if err==nil{
+		writeResponse = common.ClientMasterWriteResponse{
+			ChunkHandle:           chunkHandle,
+			MutationId:            master.idGenerator.Generate().Int64(),
+			PrimaryChunkServer:    primaryServer,
+			SecondaryChunkServers: secondaryServers,
+			ErrorMessage: "",
 		}
 	}
 	// write a response back to the client

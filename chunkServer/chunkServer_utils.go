@@ -123,6 +123,9 @@ func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 	}
 }
 
+// inserts the data into the chunkServers LRU cache, the LRU cache is basically a mapping between the mutationId and the data
+// we could store the chunkHandle as well as part of the mapping but I dont think thats necessary as we are anyways associating the 
+// chunkHandle with the mutationId in the subsequent commit requests which are sent between the chunkServers so I guess its fine.
 func (chunkServer *ChunkServer) writeChunkToCache(mutationId int64, data []byte) error {
 	chunkServer.lruCache.Put(mutationId, data)
 	return nil
