@@ -356,9 +356,11 @@ func (chunkServer *ChunkServer) handleClientReadRequest(conn net.Conn, requestBo
 }
 /* ChunkServer->Client */
 func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request common.ClientChunkServerReadRequest) error {
-
-	chunk, err := os.Open(strconv.FormatInt(request.ChunkHandle, 10) + ".chunk")
+	var chunkPresent byte
+	chunkPresent=1
+	chunk, err := os.OpenFile(strconv.FormatInt(request.ChunkHandle, 10) + ".chunk",os.O_RDONLY,0600)
 	if err != nil {
+		chunkPresent=0
 		return err
 	}
 	defer chunk.Close()
@@ -367,9 +369,20 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 	if err != nil {
 		return err
 	}
+	if (fileInfo.Size()==0){
+		chunkPresent=0
+	}
 
-	sizeBuf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(sizeBuf, uint64(fileInfo.Size()))
+	_,err=conn.Write([]byte{chunkPresent})
+	if err!=nil{
+		return err
+	}
+	if(chunkPresent==0){
+		return nil
+	}
+
+	sizeBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(sizeBuf, uint32(fileInfo.Size()))
 	_, err = conn.Write(sizeBuf)
 	if err != nil {
 		return err

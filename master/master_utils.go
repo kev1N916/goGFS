@@ -4,13 +4,29 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net"
+	"os"
 	"time"
 
 	"github.com/involk-secure-1609/goGFS/common"
 	"github.com/involk-secure-1609/goGFS/helper"
 )
 
-func (master *Master) chooseSecondaryServers() []string {
+func (master *Master) getMetadataForFile(filename string) (Chunk,[]string,error) {
+	fileInfo, err := os.Stat(filename)
+	if err!=nil{
+		return Chunk{},nil,err
+	}
+	chunkOffset := fileInfo.Size() / common.ChunkSize
+	
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	
+	chunk := master.fileMap[filename][chunkOffset]
+	chunkServers := master.chunkHandler[chunk.ChunkHandle]
+	
+	return chunk,chunkServers, nil
+}
+func (master *Master) chooseChunkServers() []string {
 	// master.mu.Lock()
 	// defer master.mu.Unlock()
 	servers := make([]string, 0)

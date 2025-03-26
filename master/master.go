@@ -27,6 +27,9 @@ type Master struct {
 	mu                     sync.Mutex
 	opLogMu                sync.Mutex
 }
+
+// each Chunk contains its ChunkHandle and its size 
+// currently we are not using the ChunkSize for anything
 type Chunk struct {
 	ChunkHandle int64
 	ChunkSize   int64
@@ -36,6 +39,11 @@ type ChunkServerConnection struct {
 	port string
 	conn net.Conn
 }
+
+// The lease struct is used to designate the primary ChunkServer during write Requests
+// the lease is granted only for a certain period of time
+// chunkServers can extend their leases by sending extension requests on heartbeat messages
+// regularly exchanged with the masterServer
 type Lease struct {
 	server    string
 	grantTime time.Time
@@ -59,15 +67,16 @@ func NewMaster(port string) (*Master, error) {
 		leaseGrants: make(map[int64]*Lease),
 	}, nil
 }
+
+// writes the response back to the client 
 func (master *Master) writeMasterReadResponse(conn net.Conn, readResponse common.ClientMasterReadResponse) error {
-	// readResponse := common.ClientMasterReadResponse{
-	// 	ChunkHandle:  chunkHandle,
-	// 	ChunkServers: chunkServers,
-	// }
+
+	// serializes the readResponse struct into bytes 
 	readResponseInBytes, err := helper.EncodeMessage(common.ClientMasterReadResponseType, readResponse)
 	if err != nil {
 		return err
 	}
+	// writes it to the client
 	_, err = conn.Write(readResponseInBytes)
 	if err != nil {
 		return err
@@ -75,6 +84,8 @@ func (master *Master) writeMasterReadResponse(conn net.Conn, readResponse common
 	return nil
 }
 
+// the master handles the readRequest from the client by replying with the chunkHandle and the chunkServers
+// if the master does not have any metadata on the file, it replies with an error Message 
 func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterReadRequest](requestBodyBytes)
 	if err != nil {
@@ -86,16 +97,11 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 		ChunkHandle:  -1,
 		ChunkServers: make([]string, 0),
 	}
-	fileInfo, err := os.Stat(request.Filename)
-	if err != nil {
-		master.writeMasterReadResponse(conn, readResponse)
+	chunk,chunkServers,err:=master.getMetadataForFile(request.Filename)
+	if err!=nil{
+		err=master.writeMasterReadResponse(conn,readResponse)
 		return err
 	}
-	chunkOffset := fileInfo.Size() / common.ChunkSize
-	master.mu.Lock()
-	chunk := master.fileMap[request.Filename][chunkOffset]
-	chunkServers := master.chunkHandler[chunk.ChunkHandle]
-	master.mu.Unlock()
 	readResponse.ChunkHandle = chunk.ChunkHandle
 	readResponse.ChunkServers = chunkServers
 	readResponse.ErrorMessage = ""
@@ -139,7 +145,10 @@ func (master *Master) handleMasterDeleteRequest(conn net.Conn, requestBodyBytes 
 
 }
 
-func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes []byte) error {
+
+// the client write request only consists of the file to which the client wants to mutate.
+// the master 
+func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterWriteRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Decoding failed:", err)
@@ -153,6 +162,8 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes [
 		ChunkHandle: -1,
 	}
 	master.mu.Lock()
+	// if the file does not exist the master creates a new one and 
+	// creates a new chunk for that file
 	_, fileAlreadyExists := master.fileMap[request.Filename]
 	if !fileAlreadyExists {
 		master.fileMap[request.Filename] = make([]Chunk, 0)
@@ -164,11 +175,13 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes [
 		master.fileMap[request.Filename] = append(master.fileMap[request.Filename], chunk)
 	}
 	chunkHandle := master.fileMap[request.Filename][len(master.fileMap[request.Filename])-1].ChunkHandle
+	// if chunk servers have not been designated for the chunkHandle then we choose them
 	_, chunkServerExists := master.chunkHandler[chunkHandle]
 	if !chunkServerExists {
-		master.chunkHandler[chunkHandle] = master.chooseSecondaryServers()
+		master.chunkHandler[chunkHandle] = master.chooseChunkServers()
 	}
 
+	// assign primary and secondary chunkServers
 	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
 	master.mu.Unlock()
 	if err != nil {
@@ -181,19 +194,21 @@ func (master *Master) handleMasterWriteRequest(conn net.Conn, requestBodyBytes [
 		SecondaryChunkServers: secondaryServers,
 	}
 	if op.ChunkHandle != -1 {
+		// log the operation if it has resulted in a new Chunk creation otherwise there is no need to log it
 		err = master.writeToOpLog(op)
 		if err != nil {
 			return err
 		}
 	}
-	err = master.writeMasterWriteResponse(conn, writeResponse)
+	// write a response back to the client
+	err = master.writeClientMasterWriteResponse(conn, writeResponse)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (master *Master) writeMasterWriteResponse(conn net.Conn, writeResponse common.ClientMasterWriteResponse) error {
+func (master *Master) writeClientMasterWriteResponse(conn net.Conn, writeResponse common.ClientMasterWriteResponse) error {
 
 	writeResponseInBytes, err := helper.EncodeMessage(common.ClientMasterWriteResponseType, writeResponse)
 	if err != nil {
@@ -353,7 +368,7 @@ func (master *Master) handleCreateNewChunkRequest(conn net.Conn,messageBytes []b
 func (master *Master) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	for {
+	for{
 		messageType, messageBytes, err := helper.ReadMessage(conn)
 		if err != nil {
 			return
@@ -392,7 +407,7 @@ func (master *Master) handleConnection(conn net.Conn) {
 			}
 
 			// Process write request
-			err = master.handleMasterWriteRequest(conn, messageBytes)
+			err = master.handleClientMasterWriteRequest(conn, messageBytes)
 			if err != nil {
 				return
 			}
@@ -402,7 +417,6 @@ func (master *Master) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-			// Process heartbeat
 			err = master.handleMasterDeleteRequest(conn, messageBytes)
 			if err != nil {
 				return
