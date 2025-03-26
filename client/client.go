@@ -396,6 +396,8 @@ func (client *Client) sendWriteRequestToPrimary(port string, writeRequestToPrima
 
 }
 
+// This function sends a request to the master calling for the creation of a new chunkHandle for 
+// the file we have specified.
 func (client *Client) createNewChunkForFile(filename string) error {
 
 	newChunkRequest := common.ClientMasterCreateNewChunkRequest{
@@ -425,9 +427,6 @@ func (client *Client) createNewChunkForFile(filename string) error {
 // a commit request to the primary which commits the data on its own server on if this is successfull
 // sends commit requests to all the other secondary servers. If any of these commit requests fail the client will be notified
 // and will have to try again.
-
-// In our implementaion of writes, the client just specifies which file it wants to write to,
-// the master replies with the latest chunkHandle and also the primary and seconday servers of this chunk
 func (client *Client) Write(filename string, data []byte) error {
 
 	// formulate the request
@@ -436,6 +435,8 @@ func (client *Client) Write(filename string, data []byte) error {
 	}
 
 	// send the request to the master
+	// In our implementaion of writes, the client just specifies which file it wants to write to,
+	// the master replies with the latest chunkHandle and also the primary and seconday servers of this chunk
 	writeResponse, err := client.writeToMasterServer(masterWriteRequest)
 	if err != nil {
 		return err
@@ -454,7 +455,7 @@ func (client *Client) Write(filename string, data []byte) error {
 		ChunkHandle:      writeResponse.ChunkHandle,
 		MutationId:       writeResponse.MutationId,
 		SecondaryServers: writeResponse.SecondaryChunkServers,
-		SizeOfData:       int(len(data)),
+		// SizeOfData:       int(len(data)),
 	}
 
 	// send the write request to the primary
@@ -466,6 +467,8 @@ func (client *Client) Write(filename string, data []byte) error {
 		// in such a case we will try to create a new chunk by sending a request to the master
 		// and then retry the entire write operation from the beginning
 		if err == common.ErrChunkFull {
+
+			// creates a new chunk for the file
 			err = client.createNewChunkForFile(filename)
 			if err != nil {
 				return err
@@ -509,8 +512,9 @@ func (client *Client) replicateChunkToAllServers(writeResponse *common.ClientMas
 
 }
 
-/* Client Delete Operations */
-
+// Client Delete Operation
+// Sends a delete request to the master and then depending on the response status , the delete 
+// request could have succeeded or failed.
 func (client *Client) sendDeleteRequestToMaster(deleteRequest common.ClientMasterDeleteRequest) error {
 	conn, dialErr := net.Dial("tcp", client.masterServer)
 	if dialErr != nil {
@@ -546,13 +550,15 @@ func (client *Client) sendDeleteRequestToMaster(deleteRequest common.ClientMaste
 	return nil
 }
 
-// func (client *Client) readDeleteResposnse
+// Deletes the file which we have entered.
+// Deletion from the client said is only a client->master operation.
 func (client *Client) Delete(fileName string) error {
 
 	deleteRequest := common.ClientMasterDeleteRequest{
 		Filename: fileName,
 	}
 
+	// sends the delete request to the master
 	err := client.sendDeleteRequestToMaster(deleteRequest)
 	if err != nil {
 		return err

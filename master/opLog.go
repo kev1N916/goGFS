@@ -21,8 +21,8 @@ type Operation struct {
 }
 
 func (master *Master) writeToOpLog(op Operation) error {
-	master.opLogMu.Lock()
-	defer master.opLogMu.Unlock()
+	// master.opLogMu.Lock()
+	// defer master.opLogMu.Unlock()
 
 	var logLine string
 	switch op.Type {
@@ -136,8 +136,8 @@ func (master *Master) readCheckpoint(checkpointBytes []byte, totalMappings int64
 	return nil
 }
 func (master *Master) readOpLog() error {
-	master.opLogMu.Lock()
-	defer master.opLogMu.Unlock()
+	// master.opLogMu.Lock()
+	// defer master.opLogMu.Unlock()
 	// Read and apply each operation from the log
 	scanner := bufio.NewScanner(master.currentOpLog)
 	for scanner.Scan() {
@@ -253,8 +253,8 @@ func (master *Master) buildCheckpoint() error {
 
 // Helper function to switch to a new operation log file 
 func (master *Master) switchOpLog() error {
-	master.opLogMu.Lock()
-	defer master.opLogMu.Unlock()
+	// master.opLogMu.Lock()
+	// defer master.opLogMu.Unlock()
 
 	// Close the current log file
 	if master.currentOpLog != nil {

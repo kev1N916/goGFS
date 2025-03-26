@@ -25,7 +25,7 @@ type Master struct {
 	fileMap                map[string][]Chunk // maps file names to array of chunkIds
 	chunkHandler           map[int64][]string // maps chunkIds to the chunkServers which store those chunks
 	mu                     sync.Mutex
-	opLogMu                sync.Mutex
+	// opLogMu                sync.Mutex
 }
 
 // each Chunk contains its ChunkHandle and its size 
@@ -68,7 +68,7 @@ func NewMaster(port string) (*Master, error) {
 	}, nil
 }
 
-// writes the response back to the client 
+// writes the response back to the client for a read request
 func (master *Master) writeMasterReadResponse(conn net.Conn, readResponse common.ClientMasterReadResponse) error {
 
 	// serializes the readResponse struct into bytes 
@@ -109,6 +109,7 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 	return nil
 }
 
+// writes the response back to the client for a delete request
 func (master *Master) writeMasterDeleteResponse(conn net.Conn, response common.ClientMasterDeleteResponse) error {
 
 	responseBytes, err := helper.EncodeMessage(common.ClientMasterDeleteResponseType, response)
@@ -122,7 +123,14 @@ func (master *Master) writeMasterDeleteResponse(conn net.Conn, response common.C
 	}
 	return nil
 }
-func (master *Master) handleMasterDeleteRequest(conn net.Conn, requestBodyBytes []byte) error {
+
+// Handles a client delete request 
+// During a delete request we just delete the metadata about the file from the master.
+// We first delete the file temporarily by renaming it to a alternate name.
+// If this temporary file is in our system for more than a certain amount of time then 
+// we will delete the file permanenetly.
+// Deletion from the master is primarily a change in metadata operation.
+func (master *Master) handleClientMasterDeleteRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterDeleteRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Decoding failed:", err)
@@ -145,58 +153,6 @@ func (master *Master) handleMasterDeleteRequest(conn net.Conn, requestBodyBytes 
 
 }
 
-func (master *Master) handleChunkCreation(fileName string) (int64,string,[]string,error){
-	// opsToLog := make([], 0)
-	op := Operation{
-		Type:        common.ClientMasterWriteRequestType,
-		File:       fileName,
-		ChunkHandle: -1,
-	}
-	master.mu.Lock()
-	defer master.mu.Unlock()
-
-	// if the file does not exist the master creates a new one and 
-	// creates a new chunk for that file
-	_, fileAlreadyExists := master.fileMap[fileName]
-	if !fileAlreadyExists {
-		master.fileMap[fileName] = make([]Chunk, 0)
-		chunk := Chunk{
-			ChunkHandle: master.generateNewChunkId(),
-			ChunkSize:   0,
-		}
-		op.ChunkHandle = chunk.ChunkHandle
-		master.fileMap[fileName] = append(master.fileMap[fileName], chunk)
-	}
-	chunkHandle := master.fileMap[fileName][len(master.fileMap[fileName])-1].ChunkHandle
-	// if chunk servers have not been designated for the chunkHandle then we choose them
-	_, chunkServerExists := master.chunkHandler[chunkHandle]
-	if !chunkServerExists {
-		master.chunkHandler[chunkHandle] = master.chooseChunkServers()
-	}
-	if op.ChunkHandle != -1 {
-		// log the operation if it has resulted in a new Chunk creation otherwise there is no need to log it
-		err := master.writeToOpLog(op)
-		if err != nil {
-			return -1,"",nil,err
-		}
-	}
-	// assign primary and secondary chunkServers
-	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
-	if err != nil {
-		return -1,"",nil,err
-	}
-	// writeResponse := common.ClientMasterWriteResponse{
-	// 	ChunkHandle:           chunkHandle,
-	// 	// a mutationId is generated so that during the commit request we can mantain an order 
-	// 	// between concurrent requests
-	// 	MutationId:            master.idGenerator.Generate().Int64(),
-	// 	PrimaryChunkServer:    primaryServer,
-	// 	SecondaryChunkServers: secondaryServers,
-	// }
-	return chunkHandle,primaryServer,secondaryServers,nil
-
-
-}
 // the client write request only consists of the file to which the client wants to mutate.
 // the master , if the file does not have any chunks associated with it , we create a new one and 
 // log this creation, after that we assign secondary chunk servers for this chunk. Then we choose 
@@ -234,6 +190,7 @@ func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyB
 	return nil
 }
 
+// writes the response back to the client for a write request
 func (master *Master) writeClientMasterWriteResponse(conn net.Conn, writeResponse common.ClientMasterWriteResponse) error {
 
 	writeResponseInBytes, err := helper.EncodeMessage(common.ClientMasterWriteResponseType, writeResponse)
@@ -247,6 +204,7 @@ func (master *Master) writeClientMasterWriteResponse(conn net.Conn, writeRespons
 	return nil
 }
 
+// writes the response back to the chunkServer for a handshake
 func (master *Master) writeHandshakeResponse(conn net.Conn, handshakeResponse common.MasterChunkServerHandshakeResponse) error {
 	// handshakeResponse := common.MasterChunkServerHandshakeResponse{
 	// 	Message: "Handshake successful",
@@ -321,6 +279,7 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 
 }
 
+// writes the response back to the chunk server for a heartbeat request
 func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.MasterChunkServerHeartbeatResponse) error {
 
 	heartbeatResponse, err := helper.EncodeMessage(common.MasterChunkServerHeartbeatResponseType, response)
@@ -334,7 +293,9 @@ func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.Mast
 	}
 	return nil
 }
-func (master *Master) handleMasterHandshake(conn net.Conn, requestBodyBytes []byte) error {
+
+// Handles the initial chunkServer master handshake request 
+func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBodyBytes []byte) error {
 	handshake, err := helper.DecodeMessage[common.MasterChunkServerHandshake](requestBodyBytes)
 	if err != nil {
 		log.Println("Encoding failed:", err)
@@ -388,7 +349,11 @@ func (master *Master) handleCreateNewChunkRequest(conn net.Conn,messageBytes []b
 	if err != nil {
 		return err
 	}
-	master.createNewChunk(newChunkRequest.Filename)
+	
+	err=master.createNewChunk(newChunkRequest.Filename)
+	if err!=nil{
+		return err
+	}
 	return nil
 }
 func (master *Master) handleConnection(conn net.Conn) {
@@ -443,14 +408,14 @@ func (master *Master) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-			err = master.handleMasterDeleteRequest(conn, messageBytes)
+			err = master.handleClientMasterDeleteRequest(conn, messageBytes)
 			if err != nil {
 				return
 			}
 		case common.MasterChunkServerHandshakeType:
 			log.Println("Received MasterChunkServerHandshakeType")
 			// Process handshake
-			err = master.handleMasterHandshake(conn, messageBytes)
+			err = master.handleChunkServerMasterHandshake(conn, messageBytes)
 			if err != nil {
 				return
 			}

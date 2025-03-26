@@ -119,7 +119,7 @@ type PrimaryChunkCommitRequest struct {
 	ChunkHandle int64 // ID of the chunk to commit
 	MutationId  int64 // ID of the mutation
     SecondaryServers []string // List of secondary servers
-	SizeOfData int
+	// SizeOfData int
 }
 
 type PrimaryChunkCommitResponse struct {
