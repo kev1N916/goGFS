@@ -3,7 +3,6 @@ package chunkserver
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math/rand/v2"
@@ -20,7 +19,7 @@ import (
 
 type CommitRequest struct {
 	conn          net.Conn
-	commitRequest common.PrimaryChunkCommitRequest
+	commitRequest *common.PrimaryChunkCommitRequest
 }
 
 type CommitResponse struct {
@@ -28,7 +27,7 @@ type CommitResponse struct {
 	commitResponse common.PrimaryChunkCommitResponse
 }
 type ChunkServer struct {
-	leaseUsage           map[int64]time.Time
+	// leaseUsage           map[int64]time.Time
 	commitRequestChannel chan CommitRequest
 	lruCache             *lrucache.LRUBufferCache
 	mu                   sync.Mutex
@@ -45,6 +44,11 @@ type LeaseGrant struct {
 	grantTime   time.Time
 }
 
+type InterChunkServerResponseHandler struct{
+	wg *sync.WaitGroup
+	responseChannel chan int
+}
+
 func NewChunkServer(port string) *ChunkServer {
 
 	chunkServer := &ChunkServer{
@@ -58,7 +62,9 @@ func NewChunkServer(port string) *ChunkServer {
 }
 
 /* ChunkServer->ChunkServer Request */
-func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(chunkServerPort string, requestBytes []byte) error {
+// Responsible for sendign the commit request to a chunkServer. Uses exponential backoff with jitter.
+func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(responseHandler *InterChunkServerResponseHandler,chunkServerPort string, requestBytes []byte) {
+	defer responseHandler.wg.Done()
 	maxRetries := 5
 	initialBackoff := 100 * time.Millisecond
 	maxBackoff := 5 * time.Second
@@ -87,12 +93,14 @@ func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(chunkServerPort
 
 		// If successful, return nil
 		if err == nil {
-			return nil
+			responseHandler.responseChannel<-1
+			return
 		}
 
 		// If this was the last attempt, return the error
 		if attempt == maxRetries-1 {
-			return fmt.Errorf("failed to write to chunk server after %d attempts: %w", maxRetries, err)
+			responseHandler.responseChannel<-0
+			return
 		}
 
 		// Calculate backoff with exponential increase and jitter
@@ -112,8 +120,7 @@ func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(chunkServerPort
 		time.Sleep(backoff)
 	}
 
-	// This should never be reached due to the return in the last iteration of the loop
-	return fmt.Errorf("failed to write to chunk server after %d attempts", maxRetries)
+	responseHandler.responseChannel<-0
 }
 
 /* ChunkServer->Client Response */
@@ -131,6 +138,9 @@ func (chunkServer *ChunkServer) writePrimaryChunkCommitResponse(response CommitR
 }
 
 /* ChunkServer->ChunkServer Request */
+// This function is responsible for sending inter chunk server commit requests which are exchanged between 
+// the primary chunkServer and the secondary chunkServers after the primary ChunkServer has finished applying the
+// mutation on its own chunk. 
 func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServers []string, req common.InterChunkServerCommitRequest) error {
 
 	requestBytes, err := helper.EncodeMessage(common.InterChunkServerCommitRequestType, req)
@@ -138,10 +148,23 @@ func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServ
 		return err
 	}
 
+	// intitialize the responseHandler so that we can send concurrent requests
+	responseHandler:=InterChunkServerResponseHandler{}
+	responseHandler.responseChannel=make(chan int ,len(secondaryServers))
+	responseHandler.wg.Add(len(secondaryServers))
+
+	// send the interchunkCommitRequests concurrently
 	for _, serverPort := range secondaryServers {
-		err = chunkServer.writeCommitRequestToSingleServer(serverPort, requestBytes)
-		if err != nil {
-			return err
+		go chunkServer.writeCommitRequestToSingleServer(&responseHandler,serverPort, requestBytes)
+	}
+
+	// wait for the requests to complete
+	responseHandler.wg.Wait()
+
+	// if any of the requests fail the response channel will contain a 0
+	for i:=range(responseHandler.responseChannel){
+		if i==0 {
+			return errors.New("inter chunk server commit request failed")
 		}
 	}
 
@@ -149,6 +172,9 @@ func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServ
 }
 
 /* ChunkServer->ChunkServer  */
+// This function is called after another chunkServer has received an InterChunkServerCommitRequest 
+// and replies to it. The mutation on the chunkServer could fail for a large number of reasons(the write on the 
+// chunk could fail etc), and so if any error occurs we return the error.
 func (chunkServer *ChunkServer) handleInterChunkCommitResponse(conn net.Conn) error {
 
 	messageType, messageBytes, err := helper.ReadMessage(conn)
@@ -166,21 +192,28 @@ func (chunkServer *ChunkServer) handleInterChunkCommitResponse(conn net.Conn) er
 	}
 
 	if !response.Status {
-		return errors.New("error on one of the chunk Servers")
+		return errors.New(response.ErrorMessage)
 	}
 	return nil
 
 }
 
 /* ChunkServer->ChunkServer Request */
+// This function is triggered when the the chunkServer receives an InterChunkCommitRequest message.
+// The message would contain a list of mutationIds which the chunkServer has to apply on the chunk specified in 
+// the request. The request would also specify the offset where the mutations have to start from.
+// If errors happen anywhere we will send a response back to the primary chunkServer which indicates 
+// the write has failed
 func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Conn, requestBodyBytes []byte) error {
 
 	response := common.InterChunkServerCommitResponse{
 		Status: true,
+		ErrorMessage: "",
 	}
 	request, err := helper.DecodeMessage[common.InterChunkServerCommitRequest](requestBodyBytes)
 	if err != nil {
 		response.Status = false
+		response.ErrorMessage="error on secondary chunkServers, please try again"
 		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 		_, err = conn.Write(responseBytes)
 		if err != nil {
@@ -194,6 +227,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	file, err := os.OpenFile(strconv.FormatInt(request.ChunkHandle, 10)+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		response.Status = false
+		response.ErrorMessage="error on secondary chunkServers, please try again"
 		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 		_, err = conn.Write(responseBytes)
 		if err != nil {
@@ -201,11 +235,13 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		}
 		return nil
 	}
+	defer file.Close()
 	chunkOffset := request.ChunkOffset
 	for _, mutationId := range request.MutationOrder {
 		amountWritten, err := chunkServer.mutateChunk(file, mutationId, chunkOffset)
 		if err != nil {
 			response.Status = false
+			response.ErrorMessage="error on secondary chunkServers, please try again"
 			responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 			_, err = conn.Write(responseBytes)
 			if err != nil {
@@ -239,55 +275,74 @@ func (chunkServer *ChunkServer) handleChunkExceedsMaxSize(requests []CommitReque
 	return nil
 }
 
-/* Client->ChunkServer Request */
+// Client->ChunkServer Request
+// The primary first applies the mutations on its own chunk and then
+// forwards the write request to all secondary replicas. Each secondary replica applies
+// mutations in the same serial number order assigned by the primary.
+// The secondaries all reply to the primary indicating that they have completed the operation.
 func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requests []CommitRequest) error {
 	// response := common.PrimaryChunkCommitResponse{
 	// 	Offset: 0,
 	// 	Status: true,
 	// }
-
-	totalCommitSize := 0
-	for _, commit := range requests {
-		totalCommitSize += commit.commitRequest.SizeOfData
-	}
 	secondaryServers := requests[0].commitRequest.SecondaryServers
-	chunk, err := os.OpenFile(strconv.FormatInt(chunkHandle, 10)+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		return err
-	}
 
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
+	chunk, err := os.OpenFile(strconv.FormatInt(chunkHandle, 10)+".chunk", os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		return err
+	}
+	defer chunk.Close()
 	chunkInfo, err := chunk.Stat()
 	if err != nil {
 		return err
 	}
 
 	chunkOffset := chunkInfo.Size()
+	// this will be the offset which we will send to all the secondary chunkServers
+	// they have talked about the atomic record append in the paper
+	// In a record append, however, the client specifies only the data. GFS
+	// appends it to the file at least once atomically (i.e., as one continuous sequence of bytes)
+	//  at an offset of GFS’s choosing and returns that offset to the client. 
+	// We need to keep track of the offset which is present at the beginning of the mutations 
+	// and return it to the client.
+	chunkOffsetStart := chunkOffset
 
-	if chunkOffset+int64(totalCommitSize) > common.ChunkSize {
-		return chunkServer.handleChunkExceedsMaxSize(requests)
-	}
-	successfullWrites := make([]CommitResponse, 0)
-	unsucessfullWrites := make([]CommitResponse, 0)
+	// to keep track of which writes succeeded/failed on the primary itself
+	successfullPrimaryWrites := make([]CommitResponse, 0)
+	unsucessfullPrimaryWrites := make([]CommitResponse, 0)
 
 	mutationOrder := make([]int64, 0)
 
+	// apply the mutations on the primary chunkServer
 	for _, value := range requests {
+
+		// we return back the amount of data written so that we can increase our offset 
+		// for the subsequent requests
 		amountWritten, err := chunkServer.mutateChunk(chunk, value.commitRequest.MutationId, chunkOffset)
 		if err != nil {
-			// errorOnPrimary = true
-			unsucessfullWrites = append(unsucessfullWrites, CommitResponse{
+			// either an error occurs because the write has actually failed
+			// or an error occurs due to our check on if the append is going to exceed the max
+			// chunk size, either way we add it to the list of unsuccessfull requests
+			response := CommitResponse{
 				conn: value.conn,
 				commitResponse: common.PrimaryChunkCommitResponse{
 					Offset:       -1,
 					Status:       false,
 					ErrorMessage: "failed to write data",
 				},
-			})
+			}
+			if err == common.ErrChunkFull {
+				response.commitResponse.ErrorMessage = common.ErrChunkFull.Error()
+			}
+			unsucessfullPrimaryWrites = append(unsucessfullPrimaryWrites, response)
 			continue
 		}
-		successfullWrites = append(successfullWrites, CommitResponse{
+
+		// if the mutation is successfull on the primary then we append it to the successfull 
+		// writes list
+		successfullPrimaryWrites = append(successfullPrimaryWrites, CommitResponse{
 			conn: value.conn,
 			commitResponse: common.PrimaryChunkCommitResponse{
 				Offset:       chunkOffset,
@@ -295,21 +350,37 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 				ErrorMessage: "data has successfully been written",
 			},
 		})
+		// we also append the mutationId as we need to send all the successfull mutations to our 
+		// secondary servers 
 		mutationOrder = append(mutationOrder, value.commitRequest.MutationId)
 		chunkOffset += amountWritten
 	}
 
+	// we send a leaseExtension request to the master server, this is because the lease may expire
+	// during the mutation ie. when we are sending the interChunkServerCommitRequests, and i guess this
+	// tries to prevent it from happening.
 	chunkServer.sendLeaseExtensionRequest(chunkHandle)
 	if len(mutationOrder) > 0 {
 		interChunkServerCommitRequest := common.InterChunkServerCommitRequest{
 			ChunkHandle:   chunkHandle,
-			ChunkOffset:   chunkOffset,
+			ChunkOffset:   chunkOffsetStart,
 			MutationOrder: mutationOrder,
 		}
+		/* The primary replies to the client. Any errors encountered at any of the replicas are reported 
+		to the client. In case of errors, the write may have succeeded at the
+		primary and an arbitrary subset of the secondary replicas. (If it had failed at the primary, it would not
+		have been assigned a serial number and forwarded).The client request is considered to have failed, and the
+		modified region is left in an inconsistent state. Our client code handles such errors by retrying the failed
+		mutation. It will make a few attempts at steps (3) through (7) before falling back
+		to a retry from the beginning of the write
 
+		Basically if our interChunkCommitRequests fail at any of the chunkServers we will have to start from the 
+		beginning of the step where we push our data to all the chunkServers. So if we fail on any chunkServer
+		we return an error to all our active clients. 
+		*/
 		err := chunkServer.writeInterChunkServerCommitRequest(secondaryServers, interChunkServerCommitRequest)
 		if err != nil {
-			for _, value := range successfullWrites {
+			for _, value := range successfullPrimaryWrites {
 				value.commitResponse.Status = false
 				value.commitResponse.ErrorMessage = "failed to write data"
 				value.commitResponse.Offset = -1
@@ -317,11 +388,12 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		}
 	}
 
-	for _, value := range successfullWrites {
+	// respond to the clients for both successfull and unsuccessfull writes
+	for _, value := range successfullPrimaryWrites {
 		go chunkServer.writePrimaryChunkCommitResponse(value)
 	}
 
-	for _, value := range unsucessfullWrites {
+	for _, value := range unsucessfullPrimaryWrites {
 		go chunkServer.writePrimaryChunkCommitResponse(value)
 	}
 
@@ -445,14 +517,14 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 		Status:       true,
 		ErrorMessage: "",
 	}
-	// store that data into the chunkServers LRU cache 
+	// store that data into the chunkServers LRU cache
 	err = chunkServer.writeChunkToCache(req.MutationId, chunkData)
-	if err != nil { // there should not be any error her ig 
+	if err != nil { // there should not be any error her ig
 		writeResponse.ErrorMessage = "error while writing chunk on chunkServer"
 		writeResponse.Status = false
 	}
 
-	// writes a response to the client which acknowledges that the data has been received and stored in the LRU cache 
+	// writes a response to the client which acknowledges that the data has been received and stored in the LRU cache
 	err = chunkServer.writeClientWriteResponse(conn, writeResponse)
 	if err != nil {
 		return err
@@ -482,22 +554,21 @@ exchanged between the master and all chunkservers.
 The master may sometimes try to revoke a lease before it expires (e.g., when the master wants to disable mutations
 on a file that is being renamed).
 */
+// func (chunkServer *ChunkServer) leaseRequestHandler() {
+// 	leaseRequests := make([]int64, 0)
+// 	for _, lease := range chunkServer.leaseGrants {
+// 		if time.Now().Unix()-chunkServer.leaseUsage[lease.chunkHandle].Unix() < 60 {
+// 			leaseRequests = append(leaseRequests, lease.chunkHandle)
+// 		}
+// 	}
 
-func (chunkServer *ChunkServer) leaseRequestHandler() {
-	leaseRequests := make([]int64, 0)
-	for _, lease := range chunkServer.leaseGrants {
-		if time.Now().Unix()-chunkServer.leaseUsage[lease.chunkHandle].Unix() < 60 {
-			leaseRequests = append(leaseRequests, lease.chunkHandle)
-		}
-	}
+// 	heartbeatRequest := common.MasterChunkServerHeartbeat{
+// 		LeaseExtensionRequests: leaseRequests,
+// 	}
 
-	heartbeatRequest := common.MasterChunkServerHeartbeat{
-		LeaseExtensionRequests: leaseRequests,
-	}
-
-	heartBeatBytes, _ := helper.EncodeMessage(common.MasterChunkServerHeartbeatType, heartbeatRequest)
-	chunkServer.masterConnection.Write(heartBeatBytes)
-}
+// 	heartBeatBytes, _ := helper.EncodeMessage(common.MasterChunkServerHeartbeatType, heartbeatRequest)
+// 	chunkServer.masterConnection.Write(heartBeatBytes)
+// }
 
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
 	heartBeatResponse, _ := helper.DecodeMessage[common.MasterChunkServerHeartbeatResponse](messageBody)
@@ -574,11 +645,25 @@ func (chunkServer *ChunkServer) registerWithMaster() error {
 	return nil
 }
 
+// When the primary ChunkServer receives this commit request it doesnt mutatte the chunk immediately.
+// Instead it buffers the write and then after a certain amount of time, tries to apply multiple mutations
+// at a time to the chunk.
+// I am trying to do this in accordance with the GFS paper section 3.1 -> 4th point where they say
+// Once all the replicas have acknowledged receiving the data, the client sends a write request to the primary.
+// The request identifies the data pushed earlier to all of
+// the replicas. The primary assigns consecutive serial numbers to all the mutations it receives, possibly from
+// multiple clients, which provides the necessary serial ization. It applies the mutation to its own local state
+// in serial number order. Since we can receive mutations from multiple clients for the same chunk, it makes
+// sense to accumulate multiple mutation requests and apply them in one go.
 func (chunkServer *ChunkServer) handlePrimaryChunkCommitRequest(conn net.Conn, requestBodyBytes []byte) error {
 	req, err := helper.DecodeMessage[common.PrimaryChunkCommitRequest](requestBodyBytes)
 	if err != nil {
 		return err
 	}
+
+	// intially i was keeping a check to see whether the current chunkServer is still the primary server
+	// associated with this chunk. However i dont think this is necessary as the master will be doing the check.
+	// But i may have to change this logic
 
 	// isPrimary:=chunkServer.checkIfPrimary(req.ChunkHandle)
 	// if !isPrimary{
@@ -586,20 +671,14 @@ func (chunkServer *ChunkServer) handlePrimaryChunkCommitRequest(conn net.Conn, r
 	// 		Offset: -1,
 	// 		Status: false,
 	// 	}
-
-	// 	err=chunkServer.writePrimaryChunkCommitResponse(CommitResponse{conn: conn,commitResponse: response})
-	// 	if err!=nil{
-	// 		return  err
-	// 	}
-	// 	return nil
-	// }
 	commitRequest := CommitRequest{
 		conn:          conn,
-		commitRequest: *req,
+		commitRequest: req,
 	}
 
 	// chunkServer.leaseUsage[req.ChunkHandle]=time.Now()
 
+	// sends the request into the commitRequest buffer/channel
 	chunkServer.commitRequestChannel <- commitRequest
 	return nil
 }

@@ -6,11 +6,17 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/involk-secure-1609/goGFS/common"
 )
 
-
+// This function will be started in a goroutine an continuously handles
+// primary commit requests. It buffers commit requests and then after a certain period of time
+// goes through the commit requests and separates them according to the chunkHandle.
+// Now the requests are anyways in a certain order, we can extract the MutationId from these requests and
+// send inter-chunkServer commit requests to the secondary chunkServers specifying this mutation order.
 func (chunkServer *ChunkServer) startCommitRequestHandler() {
-	const batchDuration = 3 * time.Second
+	const batchDuration = 3 * time.Second // specifies a batch duration
 	const maxBatchSize = 100
 
 	for {
@@ -107,6 +113,8 @@ func (chunkServer *ChunkServer) loadChunks() {
 
 
 // processCommitBatch handles a batch of commit requests
+// It basically separates out the commit requests based on the chunkHandle. 
+// Then it launches goroutines that handle the commits for each chunk Separately
 func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 
 	log.Printf("Processing batch of %d commit requests", len(requests))
@@ -117,7 +125,7 @@ func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 		chunkBatches[req.commitRequest.ChunkHandle] = append(chunkBatches[req.commitRequest.ChunkHandle], req)
 	}
 	chunkServer.mu.Unlock()
-
+	// launches separate goroutines for each chunkHandle
 	for key, value := range chunkBatches {
 		go chunkServer.handleChunkPrimaryCommit(key, value)
 	}
@@ -131,16 +139,28 @@ func (chunkServer *ChunkServer) writeChunkToCache(mutationId int64, data []byte)
 	return nil
 }
 
-func (chunkServer *ChunkServer) mutateChunk(file *os.File, mutationId int64, offset int64) (int64, error) {
+// Mutates the chunk by first extracting the dta from the LRU cache and then wrting it at the presrcibed 
+// offset. We return the error if the write fails or if the data is not present in the cache  
+func (chunkServer *ChunkServer) mutateChunk(file *os.File, mutationId int64, chunkOffset int64) (int64, error) {
 
 	data, present := chunkServer.lruCache.Get(mutationId)
 	if !present {
 		return 0, errors.New("data not present in lru cache")
 	}
 
-	amountWritten, err := file.WriteAt(data, offset)
+	// if the length of our mutation causes the chunk to exceed maximum ChunkSize then we will 
+	// ask the client to retry the write after the creation of a new ChunkHandle
+	if chunkOffset+int64(len(data)) > common.ChunkSize {
+		return 0,common.ErrChunkFull
+	}
+
+	amountWritten, err := file.WriteAt(data, chunkOffset)
 	if err != nil {
 		return 0, err
+	}
+	err=file.Sync()
+	if err!=nil{
+		return 0,err
 	}
 	return int64(amountWritten), nil
 
