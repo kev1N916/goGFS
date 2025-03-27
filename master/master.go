@@ -56,6 +56,10 @@ func NewMaster(port string) (*Master, error) {
 	if err != nil {
 		return nil, err
 	}
+	err=opLogFile.Sync()
+	if err!=nil{
+		return nil,err
+	}
 	return &Master{
 		chunkServerConnections: make([]ChunkServerConnection, 0),
 		currentOpLog: opLogFile,
@@ -234,55 +238,46 @@ each chunkserver reports a subset of the chunks it has, and the master replies w
 that are no longer present in the master’s metadata. The chunkserver
 is free to delete its replicas of such chunks.
 */
-func (master *Master) writeHeartbeat(conn net.Conn, chunksToBeDeleted []int64) {
-	heartbeatResponse := common.MasterChunkServerHeartbeatResponse{
-		ChunksToBeDeleted: chunksToBeDeleted,
-	}
+// func (master *Master) writeHeartbeat(conn net.Conn, chunksToBeDeleted []int64) {
+// 	heartbeatResponse := common.MasterChunkServerHeartbeatResponse{
+// 		ChunksToBeDeleted: chunksToBeDeleted,
+// 	}
 
-	heartbeatResponseInBytes, err := helper.EncodeMessage(common.MessageType(common.MasterChunkServerHeartbeatResponseType), heartbeatResponse)
-	if err != nil {
-		return
-	}
+// 	heartbeatResponseInBytes, err := helper.EncodeMessage(common.MessageType(common.MasterChunkServerHeartbeatResponseType), heartbeatResponse)
+// 	if err != nil {
+// 		return
+// 	}
 
-	conn.Write(heartbeatResponseInBytes)
+// 	conn.Write(heartbeatResponseInBytes)
 
-}
+// }
 func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestBodyBytes []byte) error {
-	heartBeatResponse, err := helper.DecodeMessage[common.MasterChunkServerHeartbeat](requestBodyBytes)
+	heartBeatResponse, err := helper.DecodeMessage[common.ChunkServerToMasterHeartbeatResponse](requestBodyBytes)
 	if err != nil {
 		return err
 	}
 	master.mu.Lock()
 	chunksToBeDeleted := make([]int64, 0)
-	for _, chunkId := range heartBeatResponse.ChunkIds {
+	for _, chunkId := range heartBeatResponse.ChunksPresent {
 		_, presentOnMaster := master.chunkHandler[chunkId]
 		if !presentOnMaster {
 			chunksToBeDeleted = append(chunksToBeDeleted, chunkId)
 		}
 	}
-	leaseGrants := make([]int64, 0)
-
-	for _, leaseRequest := range heartBeatResponse.LeaseExtensionRequests {
-		if master.isLeaseValid(master.leaseGrants[leaseRequest], conn.LocalAddr().String()) {
-			master.leaseGrants[leaseRequest].grantTime = time.Now().Add(60 * time.Second)
-			leaseGrants = append(leaseGrants, leaseRequest)
-		}
-	}
-
 	master.mu.Unlock()
 
-	heartbeatResponse := common.MasterChunkServerHeartbeatResponse{
-		LeaseGrants:       leaseGrants,
+	heartbeatResponse := common.MasterToChunkServerHeartbeatResponse{
 		ChunksToBeDeleted: chunksToBeDeleted,
+		ErrorMessage: "",
 	}
 	return master.writeHeartbeatResponse(conn, heartbeatResponse)
 
 }
 
 // writes the response back to the chunk server for a heartbeat request
-func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.MasterChunkServerHeartbeatResponse) error {
+func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.MasterToChunkServerHeartbeatResponse) error {
 
-	heartbeatResponse, err := helper.EncodeMessage(common.MasterChunkServerHeartbeatResponseType, response)
+	heartbeatResponse, err := helper.EncodeMessage(common.MessageType(common.MasterToChunkServerHeartbeatResponseType), response)
 	if err != nil {
 		log.Println("Encoding failed:", err)
 		return err
@@ -296,13 +291,13 @@ func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.Mast
 
 // Handles the initial chunkServer master handshake request 
 func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBodyBytes []byte) error {
-	handshake, err := helper.DecodeMessage[common.MasterChunkServerHandshake](requestBodyBytes)
+	handshake, err := helper.DecodeMessage[common.MasterChunkServerHandshakeRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Encoding failed:", err)
 		return err
 	}
 	master.mu.Lock()
-	for _, chunkId := range handshake.ChunkIds {
+	for _, chunkId := range handshake.ChunkHandles {
 		master.chunkHandler[chunkId] = append(master.chunkHandler[chunkId], conn.RemoteAddr().String())
 	}
 	master.mu.Unlock()
@@ -321,10 +316,26 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 }
 
 func (master *Master) startHeartBeatWithChunkServer(chunkServerConnection ChunkServerConnection) {
+	heartBeatRequest:=common.MasterToChunkServerHeartbeatRequest{
+		Heartbeat: "HEARTBEAT",
+	}
 
+	heartbeatRequestBytes,err:=helper.EncodeMessage(common.MasterToChunkServerHeartbeatRequestType,heartBeatRequest)
+	if err!=nil{
+		return 
+	}
+
+	_,err=chunkServerConnection.conn.Write(heartbeatRequestBytes)
+	if err!=nil{
+		return
+	}
 }
 
 func (master *Master) Start() error {
+	err:=master.recover()
+	if err!=nil{
+		log.Panicf("master failed to recover correctly")
+	}
 	// Start master server
 	listener, err := net.Listen("tcp", ":"+master.port)
 	if err != nil {
@@ -344,6 +355,23 @@ func (master *Master) Start() error {
 		go master.handleConnection(conn)
 	}
 }
+
+// func (master *Master) writeCreateNewChunkResponse(conn net.Conn,messageBytes []byte)error{
+// 	newChunkRequest, err := helper.DecodeMessage[common.ClientMasterCreateNewChunkRequest](messageBytes)
+// 	if err != nil {
+// 		return err
+// 	}
+	
+// 	err=master.createNewChunk(newChunkRequest.Filename)
+// 	if err!=nil{
+// 		return err
+// 	}
+// 	return nil
+// }
+
+
+// Handles the creation of a new chunk for the specified file, this is sent to the master by the client
+// when the client receives the error that the chunk is going to overflow during writes
 func (master *Master) handleCreateNewChunkRequest(conn net.Conn,messageBytes []byte)error{
 	newChunkRequest, err := helper.DecodeMessage[common.ClientMasterCreateNewChunkRequest](messageBytes)
 	if err != nil {
@@ -412,14 +440,14 @@ func (master *Master) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-		case common.MasterChunkServerHandshakeType:
+		case common.MasterChunkServerHandshakeRequestType:
 			log.Println("Received MasterChunkServerHandshakeType")
 			// Process handshake
 			err = master.handleChunkServerMasterHandshake(conn, messageBytes)
 			if err != nil {
 				return
 			}
-		case common.MasterChunkServerHeartbeatResponseType:
+		case common.ChunkServerToMasterHeartbeatResponseType:
 			log.Println("Received MasterChunkServerHeartbeatType")
 			// Process heartbeat
 			err = master.handleChunkServerHeartbeatResponse(conn, messageBytes)

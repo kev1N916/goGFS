@@ -27,10 +27,13 @@ const (
 	ClientMasterCreateNewChunkResponseType
 
 	// ChunkServer-MasterServer Messages
-	MasterChunkServerHandshakeType
-	MasterChunkServerHeartbeatType
+	MasterToChunkServerHeartbeatRequestType
+	MasterToChunkServerHeartbeatResponseType
+	ChunkServerToMasterHeartbeatResponseType
+
+	MasterChunkServerHandshakeRequestType
 	MasterChunkServerHandshakeResponseType
-	MasterChunkServerHeartbeatResponseType
+
 	MasterChunkServerLeaseRequestType
 
 	PrimaryChunkCommitRequestType
@@ -40,23 +43,25 @@ const (
 	InterChunkServerCommitResponseType
 )
 
-type MasterChunkServerHandshake struct {
-	ChunkIds []int64
+type MasterChunkServerHandshakeRequest struct {
+	ChunkHandles []int64
 }
 
 type MasterChunkServerHandshakeResponse struct {
 	Message string
 }
 
-type MasterChunkServerHeartbeat struct {
-	ChunkIds               []int64
-	LeaseExtensionRequests []int64
+type MasterToChunkServerHeartbeatRequest struct {
+	Heartbeat string
 }
 
-type MasterChunkServerHeartbeatResponse struct {
+type MasterToChunkServerHeartbeatResponse struct {
 	ChunksToBeDeleted []int64
-	LeaseGrants []int64
 	ErrorMessage string
+}
+
+type ChunkServerToMasterHeartbeatResponse struct {
+	ChunksPresent []int64
 }
 
 type MasterChunkServerLeaseRequest struct {

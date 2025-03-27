@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
 	"github.com/involk-secure-1609/goGFS/common"
 	"github.com/involk-secure-1609/goGFS/helper"
 	lrucache "github.com/involk-secure-1609/goGFS/lruCache"
@@ -570,8 +569,28 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 }
 
 /* Master->ChunkServer */
-func (chunkServer *ChunkServer) handleMasterHeartbeat(requestBodyBytes []byte) error {
+func (chunkServer *ChunkServer) handleMasterHeartbeatRequest(requestBodyBytes []byte) error {
+	_,err:=helper.DecodeMessage[common.MasterToChunkServerHeartbeatRequest](requestBodyBytes)
+	if err!=nil{
+		return err
+	}
 
+	chunkServer.mu.Lock()
+	defer chunkServer.mu.Unlock()
+
+	heartBeatResponse:=common.ChunkServerToMasterHeartbeatResponse{
+		ChunksPresent: chunkServer.chunkHandles,
+	}
+	responseBodyBytes,err:=helper.EncodeMessage(common.ChunkServerToMasterHeartbeatResponseType,heartBeatResponse)
+	_,err=chunkServer.masterConnection.Write(responseBodyBytes)
+	if err!=nil{
+		return err
+	}
+	return nil
+}
+
+func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes []byte) error {
+	
 	return nil
 }
 
@@ -593,11 +612,9 @@ func (chunkServer *ChunkServer) handleMasterHeartbeat(requestBodyBytes []byte) e
 // }
 
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
-	heartBeatResponse, _ := helper.DecodeMessage[common.MasterChunkServerHeartbeatResponse](messageBody)
-	chunkServer.mu.Lock()
-	defer chunkServer.mu.Unlock()
-	for _, lease := range heartBeatResponse.LeaseGrants {
-		chunkServer.leaseGrants[lease].grantTime = time.Now()
+	heartBeatResponse, _ := helper.DecodeMessage[common.MasterToChunkServerHeartbeatResponse](messageBody)
+	for _, chunkHandle := range heartBeatResponse.ChunksToBeDeleted {
+		chunkServer.deleteChunk(chunkHandle)
 	}
 }
 
@@ -648,11 +665,11 @@ func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
 /* ChunkServer->Master */
 // We send all the chunkHandles which are present on the chunk server to the master
 func (chunkServer *ChunkServer) initiateHandshake() error {
-	handshakeBody := common.MasterChunkServerHandshake{
-		ChunkIds: chunkServer.chunkHandles,
+	handshakeBody := common.MasterChunkServerHandshakeRequest{
+		ChunkHandles: chunkServer.chunkHandles,
 	}
 
-	handshakeBytes, err := helper.EncodeMessage(common.MasterChunkServerHandshakeType, handshakeBody)
+	handshakeBytes, err := helper.EncodeMessage(common.MasterChunkServerHandshakeRequestType, handshakeBody)
 	if err != nil {
 		return err
 	}
@@ -772,12 +789,12 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-		case common.MasterChunkServerHeartbeatType:
-			err = chunkServer.handleMasterHeartbeat(messageBody)
+		case common.MasterToChunkServerHeartbeatRequestType:
+			err = chunkServer.handleMasterHeartbeatRequest(messageBody)
 			if err != nil {
 				return
 			}
-		case common.MasterChunkServerHeartbeatResponseType:
+		case common.MasterToChunkServerHeartbeatResponseType:
 			chunkServer.handleMasterHeartbeatResponse(messageBody)
 			// if err!=nil{
 			// 	return

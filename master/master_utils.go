@@ -203,6 +203,23 @@ func(master *Master) deleteFile(fileName string) error{
 	return nil
 }
 
+func (master *Master) tempDeleteFile(fileName string,newName string){
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	chunks, ok := master.fileMap[fileName]
+	if !ok{
+		return 
+	}
+	delete(master.fileMap,fileName)
+	var newFileName string
+	if(newName==""){
+		newFileName=fileName+"/"+time.Now().Format(time.DateTime)+"/"+".deleted"
+	}else{
+		newFileName=newName
+	}
+	master.fileMap[newFileName] = chunks
+}
+
 func (master *Master) handleChunkCreation(fileName string) (int64,string,[]string,error){
 	// opsToLog := make([], 0)
 	op := Operation{
@@ -273,6 +290,10 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 	return nil
 }
 
+
+// Appends a new chunkHandle to the file->chunkHandle mapping on the master,
+// before we change the mapping we log the operation so that we dont lose any mutations in case of 
+// a crash.
 func (master *Master) createNewChunk(fileName string) error{
 	op := Operation{
 		Type:        common.ClientMasterWriteRequestType,
@@ -294,22 +315,6 @@ func (master *Master) createNewChunk(fileName string) error{
 	return nil
 }
 
-func (master *Master) tempDeleteFile(fileName string,newName string){
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	chunks, ok := master.fileMap[fileName]
-	if !ok{
-		return 
-	}
-	delete(master.fileMap,fileName)
-	var newFileName string
-	if(newName==""){
-		newFileName=fileName+"/"+time.Now().Format(time.DateTime)+"/"+".deleted"
-	}else{
-		newFileName=newName
-	}
-	master.fileMap[newFileName] = chunks
-}
 
 // // func (master *Master) renameFile(fileName string,fileNewName string){
 

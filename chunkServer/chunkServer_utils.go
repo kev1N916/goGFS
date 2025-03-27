@@ -62,6 +62,11 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 	}
 }
 
+func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64){
+	chunkServer.mu.Lock()
+	defer chunkServer.mu.Unlock()
+}
+
 // func (chunkServer *ChunkServer) loadChunks() {
 // 	// Open the file
 // 	file, err := os.Open("chunkIds.txt")
