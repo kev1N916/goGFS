@@ -62,7 +62,7 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 	}
 }
 
-func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64){
+func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64) {
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
 }
@@ -102,14 +102,14 @@ func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64){
 // }
 
 // loads the chunk handles from the directory which we have passed into the function
-func (chunkServer *ChunkServer) loadChunks(directoryPath string) (error) {
+func (chunkServer *ChunkServer) loadChunks(directoryPath string) error {
 	// Create a slice to store chunk files
 	var chunkHandles []int64
 
 	// Read all entries in the directory
 	entries, err := os.ReadDir(directoryPath)
 	if err != nil {
-		return  err
+		return err
 	}
 
 	for _, entry := range entries {
@@ -138,7 +138,7 @@ func (chunkServer *ChunkServer) loadChunks(directoryPath string) (error) {
 		}
 	}
 
-	chunkServer.chunkHandles=chunkHandles
+	chunkServer.chunkHandles = chunkHandles
 	return nil
 
 }
@@ -184,8 +184,9 @@ func (chunkServer *ChunkServer) writeChunkToCache(mutationId int64, data []byte)
 	return nil
 }
 
-// Mutates the chunk by first extracting the dta from the LRU cache and then wrting it at the presrcibed
-// offset. We return the error if the write fails or if the data is not present in the cache
+// Mutates the chunk by first extracting the data from the LRU cache according to the mutationId
+// and then wrting it at the prescribed offset. We return the error if the write fails
+// or if the data is not present in the cache
 func (chunkServer *ChunkServer) mutateChunk(file *os.File, mutationId int64, chunkOffset int64) (int64, error) {
 
 	data, present := chunkServer.lruCache.Get(mutationId)

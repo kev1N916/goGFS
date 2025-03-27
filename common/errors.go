@@ -9,5 +9,6 @@ var (
 	ErrReadMessageBody   = errors.New("error reading message body")
 	ErrConnectionClosed  = errors.New("connection closed by client") // Or a more specific error type if needed
 	ErrChunkFull =errors.New("chunk full, try again with new Chunk")
+	ErrBadMagic =errors.New("bad magic ")
 )
 
