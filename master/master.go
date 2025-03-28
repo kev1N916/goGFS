@@ -1,6 +1,7 @@
 package master
 
 import (
+	"container/heap"
 	"log"
 	"net"
 	"sync"
@@ -19,7 +20,7 @@ type Master struct {
 	opLogger               *OpLogger
 	LastCheckpointTime     time.Time
 	LastLogSwitchTime      time.Time
-	serverList             ServerList
+	serverList             *ServerList
 	idGenerator            *snowflake.Node
 	port                   string
 	leaseGrants            map[int64]*Lease
@@ -51,17 +52,28 @@ type Lease struct {
 
 // NewMaster creates and initializes a new Master instance
 func NewMaster(port string) (*Master, error) {
-	node, _ := snowflake.NewNode(1)
-	return &Master{
+	node, err := snowflake.NewNode(1)
+	if err!=nil{
+		return nil,err
+	}
+	pq := &ServerList{}
+	heap.Init(pq)
+	master:=&Master{
 		chunkServerConnections: make([]ChunkServerConnection, 0),
 		// currentOpLog: opLogFile,
-		serverList:   make(ServerList, 0),
+		serverList:   pq,
 		idGenerator:  node,
 		port:         port,
 		fileMap:      make(map[string][]Chunk),
 		chunkHandler: make(map[int64][]string),
 		leaseGrants:  make(map[int64]*Lease),
-	}, nil
+	}
+	opLogger,err:=NewOpLogger(master)
+	if err!=nil{
+		return nil,err
+	}
+	master.opLogger=opLogger
+	return master,nil
 }
 
 // writes the response back to the client for a read request

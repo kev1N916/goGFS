@@ -19,7 +19,7 @@ func (pq ServerList) Len() int { return len(pq) }
 
 func (pq ServerList) Less(i, j int) bool {
 	// We want Pop to give us the highest, not lowest, priority so we use greater than here.
-	return pq[i].NumberOfChunks > pq[j].NumberOfChunks
+	return pq[i].NumberOfChunks < pq[j].NumberOfChunks
 }
 
 func (pq ServerList) Swap(i, j int) {

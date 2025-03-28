@@ -3,6 +3,7 @@ package master
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -34,7 +35,7 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	return chunk, chunkServers, nil
 }
 
-// not tested, just test the serverList
+// tested indirectly
 // Chooses the first 3 chunk servers from our min_heap
 // server list. In the paper chunk servers are chosen for clients
 // based on how close the chunk servers are to the client however in this implementation
@@ -42,17 +43,22 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 func (master *Master) chooseChunkServers() []string {
 	// master.mu.Lock()
 	// defer master.mu.Unlock()
-	servers := make([]string, 0)
-	for i := range 3 {
-		server := master.serverList[i]
-		servers = append(servers, server.server)
-		master.serverList.update(server, server.NumberOfChunks+1)
+	servers := make([]*Server, 0)
+	for range 3 {
+		server:=master.serverList.Pop().(*Server)
+		servers=append(servers, server)
 	}
 
-	return servers
+	serverNames:=make([]string,0)
+	for i:=range(servers){
+		serverNames=append(serverNames,servers[i].server )
+		servers[i].NumberOfChunks++
+		master.serverList.Push(servers[i])
+	}
+	return serverNames
 }
 
-// tested indirectly 
+// tested indirectly
 // Uses the snowflake package to generate a globally unique int64 id
 func (master *Master) generateNewChunkId() int64 {
 	id := master.idGenerator.Generate()
@@ -114,7 +120,7 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 	lease.grantTime = newTime
 }
 
-// tested 
+// tested
 // Chooses the primary and secondary servers.
 // If there does not exist a valid lease on the chunkHandle then the we choose a new primary server and the secondary servers
 // and assign the lease to the primary server chosen. If we already have a pre-existen lease then
@@ -129,7 +135,7 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 	}
 	// checks if there is already an existing lease
 	if !doesLeaseExist {
-		newLease:=&Lease{}
+		newLease := &Lease{}
 		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
 		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
 		newLease.grantTime = time.Now()
@@ -140,7 +146,7 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 				return "", nil, err
 			}
 		}
-		master.leaseGrants[chunkHandle]=newLease
+		master.leaseGrants[chunkHandle] = newLease
 		return primaryServer, secondaryServers, nil
 	}
 
@@ -203,7 +209,7 @@ func (master *Master) grantLeaseToPrimaryServer(primaryServer string, chunkHandl
 	return nil
 }
 
-// tested 
+// tested
 // For deleting the file, we first retrieve the chunks of the file which we have to delete,
 // we then rename the file and change the mapping from oldFileName->chunks => newFileName->chunks.
 // Before we make the metadata change we log the operation.
@@ -234,7 +240,7 @@ func (master *Master) deleteFile(fileName string) error {
 	return nil
 }
 
-// tested indirectly through opLog tests 
+// tested indirectly through opLog tests
 func (master *Master) tempDeleteFile(fileName string, newName string) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
@@ -252,6 +258,8 @@ func (master *Master) tempDeleteFile(fileName string, newName string) {
 	master.fileMap[newFileName] = chunks
 }
 
+
+// tested
 func (master *Master) handleChunkCreation(fileName string) (int64, string, []string, error) {
 	// opsToLog := make([], 0)
 	op := Operation{
@@ -307,6 +315,7 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 
 }
 
+// tested indirectly through opLog tests
 // Helper function to add a file-chunk mapping to the master's state
 func (master *Master) addFileChunkMapping(file string, chunkHandle int64) {
 	master.mu.Lock()
@@ -325,6 +334,7 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 	return nil
 }
 
+// tested
 // Appends a new chunkHandle to the file->chunkHandle mapping on the master,
 // before we change the mapping we log the operation so that we dont lose any mutations in case of
 // a crash.
@@ -368,34 +378,11 @@ func (master *Master) startBackgroundCheckpoint() {
 		}
 	}
 }
+
+// tested cuz readCheckpoint and readOpLog are tested
 func (master *Master) recover() error {
-	// First try to load the latest checkpoint
-	checkpoint, err := os.Open("checkpoint.chk")
-	if err == nil {
-		fileInfo, err := checkpoint.Stat()
-		if err != nil {
-			return err
-		}
-		fileSize := fileInfo.Size()
-
-		// Read the totalMappings count (last 8 bytes of the file)
-		countBuf := make([]byte, 4)
-		_, err = checkpoint.ReadAt(countBuf, fileSize-4)
-		if err != nil {
-			return err
-		}
-
-		// Convert bytes to int64
-		totalMappings := binary.LittleEndian.Uint32(countBuf)
-
-		// Now read the actual mapping data
-		checkPointData := make([]byte, fileSize-4)
-		_, err = checkpoint.ReadAt(checkPointData, 0)
-		if err != nil {
-			return err
-		}
-
-		err = master.readCheckpoint(checkPointData, int64(totalMappings))
+	err := master.readCheckpoint()
+	if err != nil {
 		return err
 	}
 
@@ -408,71 +395,113 @@ func (master *Master) recover() error {
 	return nil
 }
 
-func (master *Master) readCheckpoint(checkpointBytes []byte, totalMappings int64) error {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	// Clear existing state
-	master.fileMap = make(map[string][]Chunk)
+// tested 
+func (master *Master) readCheckpoint() error {
+	checkpoint, err := os.Open("checkpoint.chk")
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
 
-	// Decode each mapping
-	for range int(totalMappings) {
+		fp, err := helper.OpenTruncFile("checkpoint.chk")
+		if err != nil {
+			return err
+		}
+		intialMappings := make([]byte, 4)
+		intialMappings = binary.LittleEndian.AppendUint32(intialMappings, 0)
+		if _, err := fp.Write(intialMappings); err != nil {
+			fp.Close()
+			return err
+		}
+		if err := fp.Sync(); err != nil {
+			fp.Close()
+			return err
+		}
+
+		if _, err := fp.Seek(0, io.SeekStart); err != nil {
+			fp.Close()
+			return err
+		}
+
+		checkpoint = fp
+	}
+
+	fileInfo, err := checkpoint.Stat()
+	if err != nil {
+		return err
+	}
+	fileSize := fileInfo.Size()
+
+	// Read the totalMappings count (last 4 bytes of the file)
+	countBuf := make([]byte, 4)
+	_, err = checkpoint.ReadAt(countBuf, fileSize-4)
+	if err != nil {
+		return err
+	}
+	if _, err := checkpoint.Seek(0, io.SeekStart); err != nil {
+		checkpoint.Close()
+		return err
+	}
+
+	// Convert bytes to int32
+	totalMappings := int32(binary.LittleEndian.Uint32(countBuf))
+
+	if totalMappings > 0 {
+		// Now read the actual mapping data
+		checkPointData := make([]byte, fileSize-4)
+		_, err = checkpoint.Read(checkPointData)
+		if err != nil {
+			checkpoint.Close()
+			return err
+		}
+		checkpoint.Close()
+
+		master.mu.Lock()
+		defer master.mu.Unlock()
+		// Clear existing state
+		master.fileMap = make(map[string][]Chunk)
+
 		offset := 0
-
-		// Decode file length
-		fileLen := binary.BigEndian.Uint16(checkpointBytes[offset : offset+2])
-		offset += 2
-
-		// Check if there's enough data for the file
-		if len(checkpointBytes) < int(2+fileLen+2) {
-			return errors.New("data too short for file content")
-		}
-
-		// Decode file string
-		file := string(checkpointBytes[offset : offset+int(fileLen)])
-		offset += int(fileLen)
-
-		isDeletedFile := false
-		fileSplit := strings.Split(file, "/")
-		if len(fileSplit) == 3 {
-			fileDeletionTime, err := time.Parse(time.DateTime, fileSplit[1])
+		// Decode each mapping
+		for range int(totalMappings) {
+			bytesRead, file, chunks, err := decodeFileAndChunks(checkPointData, offset)
 			if err != nil {
-
+				err=os.Truncate("checkpoint.chk",int64(offset))
+				if err!=nil{
+					return err
+				}
+				break
 			}
-			if time.Since(fileDeletionTime) >= 72*time.Hour {
-				isDeletedFile = true
+			isDeletedFile := false
+			fileSplit := strings.Split(file, "/")
+			if len(fileSplit) == 3 {
+				fileDeletionTime, err := time.Parse(time.DateTime, fileSplit[1])
+				if err != nil {
+					continue
+				}
+				if time.Since(fileDeletionTime) >= 72*time.Hour {
+					isDeletedFile = true
+				}
 			}
-		}
-		// Decode chunks length
-		chunksLen := binary.BigEndian.Uint16(checkpointBytes[offset : offset+2])
-		offset += 2
-
-		// Check if there's enough data for the chunks
-		if len(checkpointBytes) < int(2+fileLen+2+chunksLen*8) {
-			return errors.New("data too short for chunks content")
-		}
-
-		// Decode chunks
-		chunks := make([]Chunk, chunksLen)
-		for i := range int(chunksLen) {
-			chunks[i].ChunkHandle = int64(binary.BigEndian.Uint64(checkpointBytes[offset : offset+8]))
-			offset += 8
-		}
-		if !isDeletedFile {
-			master.fileMap[file] = chunks
+			if !isDeletedFile {
+				master.fileMap[file] = chunks
+			}
+			offset+=bytesRead
 		}
 	}
 	return nil
 }
 
-func (master *Master) buildCheckpoint() {
-	// Start a new goroutine to build the checkpoint without blocking mutations
+// tested
+func (master *Master) buildCheckpoint() error {
 
 	// Create a temporary checkpoint file
 	tempCpFile, err := os.Create("checkpoint.tmp")
 	if err != nil {
 		// Handle error
-		return
+		return err
 	}
+
 	// Lock the master's state to get a consistent snapshot
 	master.mu.Lock()
 	defer master.mu.Unlock()
@@ -486,41 +515,45 @@ func (master *Master) buildCheckpoint() {
 
 	fileChunksEncoded, err = binary.Append(fileChunksEncoded, binary.LittleEndian, uint32(totalMappings))
 	if err != nil {
-		return
+		tempCpFile.Close()
+		return err
 	}
-	_, err = tempCpFile.WriteAt(fileChunksEncoded, 0)
+	_, err = tempCpFile.Write(fileChunksEncoded)
 	if err != nil {
-		return
+		tempCpFile.Close()
+		return err
 	}
 
 	// Ensure data is written to disk
 	err = tempCpFile.Sync()
 	if err != nil {
-		return
+		tempCpFile.Close()
+		return err
 	}
 
-	// Ensure data is written to disk
 	err = tempCpFile.Close()
 	if err != nil {
-		return
+		return err
 	}
 
 	// Rename the temporary file to the actual checkpoint file
-	os.Rename("checkpoint.tmp", "checkpoint.chk")
-
-	// Update the checkpoint sequence number or timestamp
-	master.LastCheckpointTime = time.Now()
-
+	err = os.Rename("checkpoint.tmp", "checkpoint.chk")
+	if err != nil {
+		return err
+	}
 	if !master.inTestMode {
+		// Update the checkpoint sequence number or timestamp
+		master.LastCheckpointTime = time.Now()
 		err = master.opLogger.switchOpLog()
 		if err != nil {
 			// Handle error
-			return
+			return err
 		}
 	}
+	return nil
 }
 
-
+// tested
 func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 	// Calculate the total buffer size needed
 	// 2 bytes for file length + file bytes + 2 bytes for chunks length + 8 bytes per chunk
@@ -531,7 +564,7 @@ func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 
 	// Encode file length as 16-bit number (2 bytes)
 	fileLen := uint16(len(file))
-	binary.BigEndian.PutUint16(buffer[offset:offset+2], fileLen)
+	binary.LittleEndian.PutUint16(buffer[offset:offset+2], fileLen)
 	offset += 2
 
 	// Encode file string as bytes
@@ -540,14 +573,62 @@ func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 
 	// Encode number of chunks as 16-bit number (2 bytes)
 	chunksLen := uint16(len(chunks))
-	binary.BigEndian.PutUint16(buffer[offset:offset+2], chunksLen)
+	binary.LittleEndian.PutUint16(buffer[offset:offset+2], chunksLen)
 	offset += 2
 
 	// Encode each 64-bit chunk
 	for _, chunk := range chunks {
-		binary.BigEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkHandle))
+		binary.LittleEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkHandle))
 		offset += 8
 	}
 
 	return buffer
+}
+
+
+// tested 
+func decodeFileAndChunks(data []byte, offset int) (int, string, []Chunk, error) {
+	// Ensure there's enough data to read file length (2 bytes)
+	if offset+2 > len(data) {
+		return 0, "", nil, errors.New("insufficient data to read file length")
+	}
+
+	// Read file length (2 bytes)
+	fileLen := binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	// Ensure there's enough data to read the file name
+	if offset+int(fileLen) > len(data) {
+		return 0, "", nil, errors.New("insufficient data to read file name")
+	}
+
+	// Read file name
+	fileName := string(data[offset : offset+int(fileLen)])
+	offset += int(fileLen)
+
+	// Ensure there's enough data to read chunks length (2 bytes)
+	if offset+2 > len(data) {
+		return 0, "", nil, errors.New("insufficient data to read chunks length")
+	}
+
+	// Read number of chunks (2 bytes)
+	chunksLen := binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	// Ensure there's enough data to read all chunks
+	if offset+int(chunksLen)*8 > len(data) {
+		return 0, "", nil, errors.New("insufficient data to read chunks")
+	}
+
+	// Decode chunks
+	chunks := make([]Chunk, chunksLen)
+	for i := range chunks {
+		chunks[i].ChunkHandle = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+		offset += 8
+	}
+
+	// Calculate total bytes read
+	totalBytesRead := 2 + len(fileName) + 2 + len(chunks)*8
+
+	return totalBytesRead, fileName, chunks, nil
 }
