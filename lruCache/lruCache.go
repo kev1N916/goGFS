@@ -20,7 +20,9 @@ type LRUBufferCache struct {
 
 // NewLRUBufferCache creates a new LRU cache with the given capacity
 func NewLRUBufferCache(capacity int) (*LRUBufferCache) {
-	
+	if(capacity<=0){
+		return nil
+	}
 	return &LRUBufferCache{
 		capacity: capacity,
 		items:    make(map[int64]*list.Element),
