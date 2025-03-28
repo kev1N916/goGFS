@@ -13,6 +13,7 @@ import (
 
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
+	inTestMode bool
 	listener               net.Listener
 	chunkServerConnections []ChunkServerConnection
 	opLogger               *OpLogger
@@ -92,8 +93,9 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 		ChunkHandle:  -1,
 		ChunkServers: make([]string, 0),
 	}
-	chunk, chunkServers, err := master.getMetadataForFile(request.Filename)
+	chunk, chunkServers, err := master.getMetadataForFile(request.Filename,request.ChunkIndex)
 	if err != nil {
+		readResponse.ErrorMessage=err.Error()
 		err = master.writeMasterReadResponse(conn, readResponse)
 		return err
 	}

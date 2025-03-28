@@ -23,7 +23,7 @@ type Operation struct {
 	Type        int
 	File        string
 	ChunkHandle int64
-	NewName     string
+	NewFileName     string
 }
 
 // Has to be 5 bytes.  The value can never change, ever, anyway.
@@ -31,11 +31,12 @@ var magicText = [3]byte{'G', 'F', 'S'}
 
 const (
 	// OpLogFileName is the file name for the opLog file.
-	OpLogFileName = "OPLOG"
+	OpLogFileName = "OPLOG"+".opLog"
 	// OpLofRewriteName is the file name for the rewrite opLog file.
-	OpLogRewriteFileName = "REWRITE-OPLOG"
+	OpLogRewriteFileName = "REWRITE-OPLOG"+".opLog"
 )
 
+// tested 
 func NewOpLogger(master *Master) (*OpLogger, error) {
 	opLogger := &OpLogger{
 		master: master,
@@ -55,6 +56,7 @@ func NewOpLogger(master *Master) (*OpLogger, error) {
 	return opLogger, nil
 }
 
+// tested 
 func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 	opLogRewriteFile, err := helper.OpenTruncFile(OpLogRewriteFileName)
 	if err != nil {
@@ -93,7 +95,7 @@ func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 	return fp, err
 }
 
-
+// tested 
 func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	// master.opLogMu.Lock()
 	// defer master.opLogMu.Unlock()
@@ -101,9 +103,9 @@ func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	var logLine string
 	switch op.Type {
 	case common.ClientMasterWriteRequestType:
-		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "Create", op.File, op.ChunkHandle, op.NewName)
+		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "Create", op.File, op.ChunkHandle, op.NewFileName)
 	case common.ClientMasterDeleteRequestType:
-		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "TempDelete", op.File, op.ChunkHandle, op.NewName)
+		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "TempDelete", op.File, op.ChunkHandle, op.NewFileName)
 	default:
 		return errors.New("operation type not defined correctly")
 	}
@@ -115,6 +117,7 @@ func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	return opLogger.currentOpLog.Sync()
 }
 
+// tested 
 func (opLogger *OpLogger) readOpLog() error {
 	
 	magicBuf:=make([]byte,3)
@@ -126,7 +129,7 @@ func (opLogger *OpLogger) readOpLog() error {
 	if err!=nil{
 		return err
 	}
-	if(!bytes.Equal(magicBuf[0:4], magicText[:])){
+	if(!bytes.Equal(magicBuf[0:3], magicText[:])){
 		return common.ErrBadMagic
 	}
 	// master.opLogMu.Lock()
@@ -158,6 +161,7 @@ func (opLogger *OpLogger) readOpLog() error {
 	return nil
 }
 
+// tested 
 // Helper function to switch to a new operation log file
 func (opLogger *OpLogger) switchOpLog() error {
 	// master.opLogMu.Lock()

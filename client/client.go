@@ -174,7 +174,7 @@ func (client *Client) Read(filename string, offset int) error {
 	// formulates the request
 	masterReadRequest := common.ClientMasterReadRequest{
 		Filename: filename,
-		Offset:   offset,
+		ChunkIndex:   offset,
 	}
 
 	// sends the request to the master

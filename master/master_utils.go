@@ -13,23 +13,29 @@ import (
 	"github.com/involk-secure-1609/goGFS/helper"
 )
 
-func (master *Master) getMetadataForFile(filename string) (Chunk, []string, error) {
-	fileInfo, err := os.Stat(filename)
-	if err != nil {
-		return Chunk{}, nil, err
-	}
-	chunkOffset := fileInfo.Size() / common.ChunkSize
-
+// tested
+func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk, []string, error) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
 
-	chunk := master.fileMap[filename][chunkOffset]
-	chunkServers := master.chunkHandler[chunk.ChunkHandle]
+	chunkList, ok := master.fileMap[filename]
+	if !ok {
+		return Chunk{}, nil, errors.New("no chunks present for this file")
+	}
+	if chunkIndex >= int(len(chunkList)) {
+		return Chunk{}, nil, errors.New("invalid chunkOffset")
+	}
 
+	chunk := chunkList[chunkIndex]
+	chunkServers, ok := master.chunkHandler[chunk.ChunkHandle]
+	if !ok {
+		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
+	}
 	return chunk, chunkServers, nil
 }
 
-// Chooses the first threee chunk servers from our min_heap
+// not tested, just test the serverList
+// Chooses the first 3 chunk servers from our min_heap
 // server list. In the paper chunk servers are chosen for clients
 // based on how close the chunk servers are to the client however in this implementation
 // that really is not possible so I have just used a min heap.
@@ -46,12 +52,14 @@ func (master *Master) chooseChunkServers() []string {
 	return servers
 }
 
+// tested indirectly 
 // Uses the snowflake package to generate a globally unique int64 id
 func (master *Master) generateNewChunkId() int64 {
 	id := master.idGenerator.Generate()
 	return id.Int64()
 }
 
+// tested indirectly
 // If the lease does not exists we just randomly shuffle the servers and choose the first server as our
 // primary and the rest of the servers as our secondary servers
 func (master *Master) choosePrimaryIfLeaseDoesNotExist(servers []string) (string, []string) {
@@ -69,6 +77,7 @@ func (master *Master) choosePrimaryIfLeaseDoesNotExist(servers []string) (string
 	return primaryServer, secondaryServers
 }
 
+// tested indirectly
 func (master *Master) chooseSecondaryIfLeaseDoesExist(primary string, servers []string) []string {
 
 	secondaryServers := make([]string, 0)
@@ -80,21 +89,23 @@ func (master *Master) chooseSecondaryIfLeaseDoesExist(primary string, servers []
 	return secondaryServers
 }
 
+// tested
 // checks if we have a valid lease
-func (master *Master) isLeaseValid(lease *Lease, port string) bool {
+func (master *Master) isLeaseValid(lease *Lease, server string) bool {
 	if lease == nil {
 		return false
 	}
-	if port != "" {
-		if lease.server != port {
+	if server != "" {
+		if lease.server != server {
 			return false
 		}
 	}
 	// checks if the time difference between the lease grant time and the current time is
 	// less than 60 seconds
-	return time.Now().Unix()-lease.grantTime.Unix() < 60
+	return (time.Now().Unix()-lease.grantTime.Unix() < 60)
 }
 
+// tested indirectly
 // renews the lease grant by adding a certain 60 seconds of time
 // to the lease
 func (master *Master) renewLeaseGrant(lease *Lease) {
@@ -103,6 +114,7 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 	lease.grantTime = newTime
 }
 
+// tested 
 // Chooses the primary and secondary servers.
 // If there does not exist a valid lease on the chunkHandle then the we choose a new primary server and the secondary servers
 // and assign the lease to the primary server chosen. If we already have a pre-existen lease then
@@ -111,16 +123,24 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 //	If the lease is valid we renew the lease and choose new secondary servers for the chunk
 func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, error) {
 	lease, doesLeaseExist := master.leaseGrants[chunkHandle]
+	chunkServers, ok := master.chunkHandler[chunkHandle]
+	if !ok {
+		return "", nil, errors.New("chunk servers do not exist for this chunk handle")
+	}
 	// checks if there is already an existing lease
 	if !doesLeaseExist {
+		newLease:=&Lease{}
 		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
-		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(master.chunkHandler[chunkHandle])
-		master.leaseGrants[chunkHandle].grantTime = time.Now()
-		master.leaseGrants[chunkHandle].server = primaryServer
-		err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
-		if err != nil {
-			return "", nil, err
+		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
+		newLease.grantTime = time.Now()
+		newLease.server = primaryServer
+		if !master.inTestMode {
+			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
+			if err != nil {
+				return "", nil, err
+			}
 		}
+		master.leaseGrants[chunkHandle]=newLease
 		return primaryServer, secondaryServers, nil
 	}
 
@@ -128,20 +148,25 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 	if master.isLeaseValid(lease, "") {
 		// if it is we renew the lease
 		master.renewLeaseGrant(lease)
-		err := master.grantLeaseToPrimaryServer(lease.server, chunkHandle)
-		if err != nil {
-			return "", nil, err
+		if !master.inTestMode {
+			err := master.grantLeaseToPrimaryServer(lease.server, chunkHandle)
+			if err != nil {
+				return "", nil, err
+			}
 		}
-		secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.server, master.chunkHandler[chunkHandle])
+		secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.server, chunkServers)
 		return lease.server, secondaryServers, nil
 	} else {
 		// if it isnt valid we choose new primary and secondary servers
-		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(master.chunkHandler[chunkHandle])
+
+		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
 		master.leaseGrants[chunkHandle].grantTime = time.Now()
 		master.leaseGrants[chunkHandle].server = primaryServer
-		err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
-		if err != nil {
-			return "", nil, err
+		if !master.inTestMode {
+			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
+			if err != nil {
+				return "", nil, err
+			}
 		}
 		return primaryServer, secondaryServers, nil
 	}
@@ -178,6 +203,7 @@ func (master *Master) grantLeaseToPrimaryServer(primaryServer string, chunkHandl
 	return nil
 }
 
+// tested 
 // For deleting the file, we first retrieve the chunks of the file which we have to delete,
 // we then rename the file and change the mapping from oldFileName->chunks => newFileName->chunks.
 // Before we make the metadata change we log the operation.
@@ -189,15 +215,18 @@ func (master *Master) deleteFile(fileName string) error {
 		return errors.New("file does not exist")
 	}
 	newFileName := fileName + "/" + time.Now().String() + "/" + ".deleted"
-	op := Operation{
-		Type:        common.ClientMasterDeleteRequestType,
-		File:        fileName,
-		ChunkHandle: -1,
-		NewName:     newFileName,
-	}
-	err := master.opLogger.writeToOpLog(op)
-	if err != nil {
-		return err
+
+	if !master.inTestMode {
+		op := Operation{
+			Type:        common.ClientMasterDeleteRequestType,
+			File:        fileName,
+			ChunkHandle: -1,
+			NewFileName: newFileName,
+		}
+		err := master.opLogger.writeToOpLog(op)
+		if err != nil {
+			return err
+		}
 	}
 	master.fileMap[newFileName] = chunks
 	delete(master.fileMap, fileName)
@@ -205,6 +234,7 @@ func (master *Master) deleteFile(fileName string) error {
 	return nil
 }
 
+// tested indirectly through opLog tests 
 func (master *Master) tempDeleteFile(fileName string, newName string) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
@@ -228,6 +258,7 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 		Type:        common.ClientMasterWriteRequestType,
 		File:        fileName,
 		ChunkHandle: -1,
+		NewFileName: "NULL",
 	}
 	var chunk Chunk
 	master.mu.Lock()
@@ -245,9 +276,11 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 	}
 	if op.ChunkHandle != -1 {
 		// log the operation if it has resulted in a new Chunk creation otherwise there is no need to log it
-		err := master.opLogger.writeToOpLog(op)
-		if err != nil {
-			return -1, "", nil, err
+		if !master.inTestMode {
+			err := master.opLogger.writeToOpLog(op)
+			if err != nil {
+				return -1, "", nil, err
+			}
 		}
 		master.fileMap[fileName] = append(master.fileMap[fileName], chunk)
 	}
@@ -296,55 +329,28 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 // before we change the mapping we log the operation so that we dont lose any mutations in case of
 // a crash.
 func (master *Master) createNewChunk(fileName string) error {
-	op := Operation{
-		Type:        common.ClientMasterWriteRequestType,
-		File:        fileName,
-		ChunkHandle: -1,
-	}
+
 	chunk := Chunk{
 		ChunkHandle: master.generateNewChunkId(),
 		ChunkSize:   0,
 	}
+	op := Operation{
+		Type:        common.ClientMasterWriteRequestType,
+		File:        fileName,
+		ChunkHandle: -1,
+		NewFileName: "NULL",
+	}
 	op.ChunkHandle = chunk.ChunkHandle
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	err := master.opLogger.writeToOpLog(op)
-	if err != nil {
-		return err
+	if !master.inTestMode {
+		err := master.opLogger.writeToOpLog(op)
+		if err != nil {
+			return err
+		}
 	}
 	master.fileMap[fileName] = append(master.fileMap[fileName], chunk)
 	return nil
-}
-
-func encodeFileAndChunks(file string, chunks []Chunk) []byte {
-	// Calculate the total buffer size needed
-	// 2 bytes for file length + file bytes + 2 bytes for chunks length + 8 bytes per chunk
-	totalSize := 2 + len(file) + 2 + len(chunks)*8
-	buffer := make([]byte, totalSize)
-
-	offset := 0
-
-	// Encode file length as 16-bit number (2 bytes)
-	fileLen := uint16(len(file))
-	binary.BigEndian.PutUint16(buffer[offset:offset+2], fileLen)
-	offset += 2
-
-	// Encode file string as bytes
-	copy(buffer[offset:offset+len(file)], file)
-	offset += len(file)
-
-	// Encode number of chunks as 16-bit number (2 bytes)
-	chunksLen := uint16(len(chunks))
-	binary.BigEndian.PutUint16(buffer[offset:offset+2], chunksLen)
-	offset += 2
-
-	// Encode each 64-bit chunk
-	for _, chunk := range chunks {
-		binary.BigEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkHandle))
-		offset += 8
-	}
-
-	return buffer
 }
 
 func (master *Master) startBackgroundCheckpoint() {
@@ -352,14 +358,14 @@ func (master *Master) startBackgroundCheckpoint() {
 	defer ticker.Stop() // Stop the ticker when the function exits
 
 	for {
-			select {
-			case <-ticker.C:				
-					master.buildCheckpoint()
-					ticker.Reset(60*time.Second)
-			default:
-					// Optional: Add some non-blocking logic here
-					// to run between ticks.
-			}
+		select {
+		case <-ticker.C:
+			go master.buildCheckpoint()
+			ticker.Reset(60 * time.Second)
+		default:
+			// Optional: Add some non-blocking logic here
+			// to run between ticks.
+		}
 	}
 }
 func (master *Master) recover() error {
@@ -393,16 +399,18 @@ func (master *Master) recover() error {
 		return err
 	}
 
-	err = master.opLogger.readOpLog()
-	if err != nil {
-		return err
+	if !master.inTestMode {
+		err = master.opLogger.readOpLog()
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (master *Master) readCheckpoint(checkpointBytes []byte, totalMappings int64) error {
 	master.mu.Lock()
-
+	defer master.mu.Unlock()
 	// Clear existing state
 	master.fileMap = make(map[string][]Chunk)
 
@@ -453,74 +461,93 @@ func (master *Master) readCheckpoint(checkpointBytes []byte, totalMappings int64
 			master.fileMap[file] = chunks
 		}
 	}
-	master.mu.Unlock()
 	return nil
 }
 
-func (master *Master) buildCheckpoint() error {
+func (master *Master) buildCheckpoint() {
 	// Start a new goroutine to build the checkpoint without blocking mutations
-	go func() {
-		// Create a temporary checkpoint file
-		tempCpFile, err := os.Create("checkpoint.tmp")
-		if err != nil {
-			// Handle error
-			return
-		}
-		// Lock the master's state to get a consistent snapshot
-		master.mu.Lock()
-		defer master.mu.Unlock()
-		totalMappings := 0
-		fileChunksEncoded := make([]byte, 0)
-		for file, chunks := range master.fileMap {
-			totalMappings++
-			fileBytes := encodeFileAndChunks(file, chunks)
-			fileChunksEncoded = append(fileChunksEncoded, fileBytes...)
-		}
 
-		fileChunksEncoded, err = binary.Append(fileChunksEncoded, binary.LittleEndian, uint32(totalMappings))
-		if err != nil {
-			return
-		}
-		_, err = tempCpFile.WriteAt(fileChunksEncoded, 0)
-		if err != nil {
-			return
-		}
+	// Create a temporary checkpoint file
+	tempCpFile, err := os.Create("checkpoint.tmp")
+	if err != nil {
+		// Handle error
+		return
+	}
+	// Lock the master's state to get a consistent snapshot
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	totalMappings := 0
+	fileChunksEncoded := make([]byte, 0)
+	for file, chunks := range master.fileMap {
+		totalMappings++
+		fileBytes := encodeFileAndChunks(file, chunks)
+		fileChunksEncoded = append(fileChunksEncoded, fileBytes...)
+	}
 
-		// Ensure data is written to disk
-		err = tempCpFile.Sync()
-		if err != nil {
-			return
-		}
+	fileChunksEncoded, err = binary.Append(fileChunksEncoded, binary.LittleEndian, uint32(totalMappings))
+	if err != nil {
+		return
+	}
+	_, err = tempCpFile.WriteAt(fileChunksEncoded, 0)
+	if err != nil {
+		return
+	}
 
-		// Ensure data is written to disk
-		err = tempCpFile.Close()
-		if err != nil {
-			return
-		}
+	// Ensure data is written to disk
+	err = tempCpFile.Sync()
+	if err != nil {
+		return
+	}
 
-		// Rename the temporary file to the actual checkpoint file
-		os.Rename("checkpoint.tmp", "checkpoint.chk")
+	// Ensure data is written to disk
+	err = tempCpFile.Close()
+	if err != nil {
+		return
+	}
 
-		// Update the checkpoint sequence number or timestamp
-		master.LastCheckpointTime = time.Now()
+	// Rename the temporary file to the actual checkpoint file
+	os.Rename("checkpoint.tmp", "checkpoint.chk")
 
+	// Update the checkpoint sequence number or timestamp
+	master.LastCheckpointTime = time.Now()
+
+	if !master.inTestMode {
 		err = master.opLogger.switchOpLog()
 		if err != nil {
 			// Handle error
 			return
 		}
-
-	}()
-
-	return nil
+	}
 }
 
-// // func (master *Master) renameFile(fileName string,fileNewName string){
 
-// // }
+func encodeFileAndChunks(file string, chunks []Chunk) []byte {
+	// Calculate the total buffer size needed
+	// 2 bytes for file length + file bytes + 2 bytes for chunks length + 8 bytes per chunk
+	totalSize := 2 + len(file) + 2 + len(chunks)*8
+	buffer := make([]byte, totalSize)
 
-// func (master *Master) permDeleteFile(fileName string) {
-// 	master.mu.Lock()
-// 	defer master.mu.Unlock()
-// 	delete(master.fileMap,fileName)
-// }
+	offset := 0
+
+	// Encode file length as 16-bit number (2 bytes)
+	fileLen := uint16(len(file))
+	binary.BigEndian.PutUint16(buffer[offset:offset+2], fileLen)
+	offset += 2
+
+	// Encode file string as bytes
+	copy(buffer[offset:offset+len(file)], file)
+	offset += len(file)
+
+	// Encode number of chunks as 16-bit number (2 bytes)
+	chunksLen := uint16(len(chunks))
+	binary.BigEndian.PutUint16(buffer[offset:offset+2], chunksLen)
+	offset += 2
+
+	// Encode each 64-bit chunk
+	for _, chunk := range chunks {
+		binary.BigEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkHandle))
+		offset += 8
+	}
+
+	return buffer
+}

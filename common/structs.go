@@ -68,8 +68,8 @@ type MasterChunkServerLeaseRequest struct {
 	ChunkHandle int64
 }
 type ClientMasterReadRequest struct {
-	Filename string // Capitalized field name
-	Offset   int    // Capitalized field name
+	Filename string 
+	ChunkIndex int
 }
 
 type ClientMasterCreateNewChunkRequest struct{
