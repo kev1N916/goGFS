@@ -65,49 +65,17 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64) {
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
+	fileName:=strconv.FormatInt(chunkHandle,10)
+	os.Remove(fileName)
 }
 
-// func (chunkServer *ChunkServer) loadChunks() {
-// 	// Open the file
-// 	file, err := os.Open("chunkIds.txt")
-// 	if err != nil {
-// 		log.Println("Error opening file:", err)
-// 		return
-// 	}
-// 	defer file.Close()
-
-// 	// Read numberOfChunks (4 bytes)
-// 	var numberOfChunks uint32
-// 	err = binary.Read(file, binary.LittleEndian, &numberOfChunks)
-// 	if err != nil {
-// 		log.Println("Error reading numberOfChunks:", err)
-// 		return
-// 	}
-
-// 	log.Println("Number of chunks:", numberOfChunks)
-
-// 	// Read chunk IDs (each 64-bit = 8 bytes)
-// 	chunkIds := make([]int64, numberOfChunks)
-// 	for i := uint32(0); i < numberOfChunks; i++ {
-// 		err = binary.Read(file, binary.LittleEndian, &chunkIds[i])
-// 		if err != nil {
-// 			log.Println("Error reading chunk ID:", err)
-// 			return
-// 		}
-// 	}
-// 	chunkServer.chunkHandles = chunkIds
-
-// 	// Print loaded chunk IDs
-// 	log.Println("Loaded chunk IDs:", chunkIds)
-// }
-
 // loads the chunk handles from the directory which we have passed into the function
-func (chunkServer *ChunkServer) loadChunks(directoryPath string) error {
+func (chunkServer *ChunkServer) loadChunks() error {
 	// Create a slice to store chunk files
 	var chunkHandles []int64
 
 	// Read all entries in the directory
-	entries, err := os.ReadDir(directoryPath)
+	entries, err := os.ReadDir(chunkServer.chunkDirectory)
 	if err != nil {
 		return err
 	}

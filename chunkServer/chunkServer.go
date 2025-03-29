@@ -45,11 +45,16 @@ type LeaseGrant struct {
 
 type InterChunkServerResponseHandler struct {
 	responseChannel chan int
+	wg sync.WaitGroup
 }
 
-func NewChunkServer() *ChunkServer {
+func NewChunkServer(chunkDirectory string) *ChunkServer {
 
 	chunkServer := &ChunkServer{
+		chunkHandles: make([]int64, 0),
+		leaseGrants: make(map[int64]*LeaseGrant),
+		mu: sync.Mutex{},
+		chunkDirectory: chunkDirectory,
 		commitRequestChannel: make(chan CommitRequest),
 		lruCache:             lrucache.NewLRUBufferCache(100),
 	}
@@ -60,7 +65,7 @@ func NewChunkServer() *ChunkServer {
 /* ChunkServer->ChunkServer Request */
 // Responsible for sending the commit request to a chunkServer. Uses exponential backoff with jitter.
 func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(responseHandler *InterChunkServerResponseHandler, chunkServerPort string, requestBytes []byte) {
-	// defer responseHandler.wg.Done()
+	defer responseHandler.wg.Done()
 	maxRetries := 5
 	initialBackoff := 100 * time.Millisecond
 	maxBackoff := 5 * time.Second
@@ -150,7 +155,7 @@ func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServ
 	// intitialize the responseHandler so that we can send concurrent requests
 	responseHandler := InterChunkServerResponseHandler{}
 	responseHandler.responseChannel = make(chan int, len(secondaryServers))
-	// responseHandler.wg.Add(len(secondaryServers))
+	responseHandler.wg.Add(len(secondaryServers))
 
 	// send the interchunkCommitRequests concurrently
 	for _, serverPort := range secondaryServers {
@@ -158,7 +163,8 @@ func (chunkServer *ChunkServer) writeInterChunkServerCommitRequest(secondaryServ
 	}
 
 	// wait for the requests to complete
-	// responseHandler.wg.Wait()
+	responseHandler.wg.Wait()
+	close(responseHandler.responseChannel)
 
 	// if any of the requests fail the response channel will contain a 0
 	for i := range responseHandler.responseChannel {
@@ -239,8 +245,6 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		}
 		return nil
 	}
-	defer file.Close()
-
 	// Get the offset from which we have to write to the chunk
 	// On an atomic append all the primary and secondary chunk servers have to append at the same offset
 	chunkOffset := request.ChunkOffset
@@ -260,6 +264,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		}
 		chunkOffset += amountWritten
 	}
+	file.Close()
 
 	// send the succeffull response back to the primary
 	requestBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
@@ -614,7 +619,7 @@ func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes [
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
 	heartBeatResponse, _ := helper.DecodeMessage[common.MasterToChunkServerHeartbeatResponse](messageBody)
 	for _, chunkHandle := range heartBeatResponse.ChunksToBeDeleted {
-		chunkServer.deleteChunk(chunkHandle)
+		go chunkServer.deleteChunk(chunkHandle)
 	}
 }
 
@@ -814,7 +819,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 
 func (chunkServer *ChunkServer) Start() {
 
-	err := chunkServer.loadChunks(chunkServer.chunkDirectory)
+	err := chunkServer.loadChunks()
 	if err != nil {
 		log.Panicf("Failed to start chunk server: %v", err)
 	}
