@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -320,9 +321,14 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	}
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	chunk, err := os.OpenFile(strconv.FormatInt(chunkHandle, 10)+".chunk", os.O_CREATE|os.O_RDWR, 0666)
-	if err != nil {
-		return
+	fileName:=strconv.FormatInt(chunkHandle,10)
+	log.Println(fileName)
+	filepath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
+	log.Println(filepath)
+	// os.Open(filepath)
+	chunk,err:=os.OpenFile(filepath+".chunk",os.O_CREATE|os.O_RDWR,0600)
+	if err!=nil{
+		return 
 	}
 	defer chunk.Close()
 	chunkInfo, err := chunk.Stat()
@@ -466,11 +472,18 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 	chunkPresent = 1
 
 	// if we have an error during the opening of the file we return an error
-	chunk, err := os.OpenFile(strconv.FormatInt(request.ChunkHandle, 10)+".chunk", os.O_RDONLY, 0600)
+	fileName:=strconv.FormatInt(request.ChunkHandle,10)
+	log.Println(fileName)
+	filepath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
+	log.Println(filepath)
+	// os.Open(filepath)
+	chunk,err:=os.OpenFile(filepath+".chunk",os.O_CREATE|os.O_RDWR,0600)
 	if err != nil {
+		log.Println("ERROR ",err)
 		chunkPresent = 0
 		_, err = conn.Write([]byte{chunkPresent})
 		if err != nil {
+			log.Println("ERROR IN WRITING MESSAGE TO CLIENT WHICH SAYS CHUNK IS NOT PRESENT")
 			return err
 		}
 		return nil
@@ -632,9 +645,10 @@ func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes [
 
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
 
-	log.Println("chunkServer " + chunkServer.ChunkDirectory + " received heartbeat response from master with chunks to delete")
+	// log.Println("chunkServer " + chunkServer.ChunkDirectory + " received heartbeat response from master with chunks to delete")
 	heartBeatResponse, _ := helper.DecodeMessage[common.MasterToChunkServerHeartbeatResponse](messageBody)
 	for _, chunkHandle := range heartBeatResponse.ChunksToBeDeleted {
+		log.Println("chunk ", chunkHandle, " to be deleted")
 		go chunkServer.deleteChunk(chunkHandle)
 	}
 
@@ -679,11 +693,12 @@ func (chunkServer *ChunkServer) handleMasterLeaseRequest(requestBodyBytes []byte
 func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
 	messageType, _, err := helper.ReadMessage(chunkServer.MasterConnection)
 	if err != nil {
-		log.Println(err)
+		log.Println("ERROR ", err)
 		return err
 	}
 
 	if messageType != common.MasterChunkServerHandshakeResponseType {
+		log.Println("ERROR ", err)
 		return err
 	}
 	return nil
@@ -803,7 +818,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.ClientChunkServerReadRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 5*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
 			if err != nil {
 				return
 			}

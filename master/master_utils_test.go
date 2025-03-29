@@ -120,7 +120,7 @@ func TestGetMetadataForFile(t *testing.T) {
 					{ChunkHandle: 2, ChunkSize: 2048},
 				},
 			},
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2"},
 				2: {"server3", "server4"},
 			},
@@ -140,7 +140,7 @@ func TestGetMetadataForFile(t *testing.T) {
 	t.Run("should return error when file does not exist", func(t *testing.T) {
 		master := &Master{
 			FileMap:      map[string][]Chunk{},
-			ChunkHandler: map[int64][]string{},
+			ChunkServerHandler: map[int64][]string{},
 			mu:          sync.Mutex{},
 		}
 
@@ -160,7 +160,7 @@ func TestGetMetadataForFile(t *testing.T) {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			ChunkHandler: map[int64][]string{},
+			ChunkServerHandler: map[int64][]string{},
 			mu:          sync.Mutex{},
 		}
 
@@ -180,7 +180,7 @@ func TestGetMetadataForFile(t *testing.T) {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			ChunkHandler: map[int64][]string{},
+			ChunkServerHandler: map[int64][]string{},
 			mu:          sync.Mutex{},
 		}
 
@@ -199,7 +199,7 @@ func TestGetMetadataForFile(t *testing.T) {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2"},
 			},
 			mu: sync.Mutex{},
@@ -227,7 +227,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should choose primary and secondary when no lease exists", func(t *testing.T) {
 		master := &Master{
 			inTestMode:     true,
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
 			LeaseGrants: map[int64]*Lease{},
@@ -252,7 +252,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should return error when no chunk servers exist", func(t *testing.T) {
 		master := &Master{
 			inTestMode:     true,
-			ChunkHandler:   map[int64][]string{},
+			ChunkServerHandler:   map[int64][]string{},
 			LeaseGrants:    map[int64]*Lease{},
 			mu:             sync.Mutex{},
 		}
@@ -269,7 +269,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		initialGrantTime := time.Now().Add(-30 * time.Second)
 		master := &Master{
 			inTestMode: true,
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
 			LeaseGrants: map[int64]*Lease{
@@ -298,7 +298,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		expiredTime := time.Now().Add(-120 * time.Second)
 		master := &Master{
 			inTestMode: true,
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
 			LeaseGrants: map[int64]*Lease{
@@ -328,7 +328,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should handle single server scenario", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1"},
 			},
 			LeaseGrants: map[int64]*Lease{},
@@ -345,7 +345,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should be thread-safe", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			ChunkHandler: map[int64][]string{
+			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
 			LeaseGrants: map[int64]*Lease{},
@@ -684,7 +684,8 @@ func TestHandleChunkCreation(t *testing.T) {
 			inTestMode:   true,
 			idGenerator:  node,
 			FileMap:      make(map[string][]Chunk),
-			ChunkHandler: make(map[int64][]string),
+			ChunkHandles: make([]int64, 0),
+			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
 			ServerList:   pq,
@@ -709,8 +710,8 @@ func TestHandleChunkCreation(t *testing.T) {
 		// Verify chunk handle matches
 		assert.Equal(t, chunks[0].ChunkHandle, chunkHandle)
 
-		// Verify ChunkHandler has been populated
-		createdServers, exists:= master.ChunkHandler[chunkHandle]
+		// Verify ChunkServerHandler has been populated
+		createdServers, exists:= master.ChunkServerHandler[chunkHandle]
 		assert.True(t, exists)
 		assert.Len(t, createdServers, 3) // Should contain 3 servers from chooseChunkServers
 
@@ -741,7 +742,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			inTestMode:   true,
 			idGenerator:  node,
 			FileMap:      make(map[string][]Chunk),
-			ChunkHandler: make(map[int64][]string),
+			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
 			ServerList:   pq,
@@ -791,7 +792,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			inTestMode:   true,
 			idGenerator:  node,
 			FileMap:      make(map[string][]Chunk),
-			ChunkHandler: make(map[int64][]string),
+			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
 			ServerList:   pq,
@@ -805,7 +806,7 @@ func TestHandleChunkCreation(t *testing.T) {
 		
 		// Pre-assign chunk servers for this chunk handle
 		preassignedServers := []string{"server-a", "server-b", "server-c"}
-		master.ChunkHandler[chunkHandle] = preassignedServers
+		master.ChunkServerHandler[chunkHandle] = preassignedServers
 
 		// Mock that choosePrimaryAndSecondary returns the expected values from preassigned servers
 		// This would typically need to be implemented in the Master struct for a real test
@@ -824,8 +825,8 @@ func TestHandleChunkCreation(t *testing.T) {
 		}
 		
 		// The ServerList should not have been modified (no new servers chosen)
-		assert.Len(t, master.ChunkHandler[chunkHandle], len(preassignedServers))
-		assert.Equal(t, preassignedServers, master.ChunkHandler[chunkHandle])
+		assert.Len(t, master.ChunkServerHandler[chunkHandle], len(preassignedServers))
+		assert.Equal(t, preassignedServers, master.ChunkServerHandler[chunkHandle])
 	})
 
 	// t.Run("should handle error from choosing primary and secondary", func(t *testing.T) {
@@ -840,7 +841,7 @@ func TestHandleChunkCreation(t *testing.T) {
 	// 		inTestMode:   true,
 	// 		idGenerator:  node,
 	// 		FileMap:      make(map[string][]Chunk),
-	// 		ChunkHandler: make(map[int64][]string),
+	// 		ChunkServerHandler: make(map[int64][]string),
 	// 		mu:           sync.Mutex{},
 	// 		ServerList:   pq,
 	// 	}
@@ -856,7 +857,7 @@ func TestHandleChunkCreation(t *testing.T) {
 	// 	// 1. An error is returned from handleChunkCreation
 	// 	// 2. The file is still created
 	// 	// 3. The chunk is still added to the file
-	// 	// 4. ChunkHandler is populated
+	// 	// 4. ChunkServerHandler is populated
 	// 	// 5. But the returned values indicate an error state
 	// })
 
@@ -879,7 +880,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			inTestMode:   true, // Test mode to avoid writing to log
 			idGenerator:  node,
 			FileMap:      make(map[string][]Chunk),
-			ChunkHandler: make(map[int64][]string),
+			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
 			ServerList:   pq,

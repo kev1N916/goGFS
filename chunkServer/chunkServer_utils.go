@@ -3,6 +3,8 @@ package chunkserver
 import (
 	"errors"
 	"io/fs"
+	"path/filepath"
+
 	// "io/fs"
 	"log"
 	"os"
@@ -68,7 +70,23 @@ func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64) {
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
 	fileName:=strconv.FormatInt(chunkHandle,10)
-	os.Remove(fileName)
+	log.Println(fileName)
+	filepath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
+	log.Println(filepath)
+	// os.Open(filepath)
+	err:=os.Remove(filepath+".chunk")
+	if err!=nil{
+		log.Println(err)
+	}
+	newChunkHandles:=make([]int64,0)
+
+	for _,val:=range(chunkServer.ChunkHandles){
+		if(val!=chunkHandle){
+			newChunkHandles = append(newChunkHandles, val)
+		}
+	}
+	chunkServer.ChunkHandles=newChunkHandles
+	log.Println(len(chunkServer.ChunkHandles))
 }
 
 // loads the chunk handles from the directory which we have passed into the function

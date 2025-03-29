@@ -28,7 +28,7 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	}
 
 	chunk := chunkList[chunkIndex]
-	chunkServers, ok := master.ChunkHandler[chunk.ChunkHandle]
+	chunkServers, ok := master.ChunkServerHandler[chunk.ChunkHandle]
 	if !ok {
 		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
 	}
@@ -129,7 +129,7 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 //	If the lease is valid we renew the lease and choose new secondary servers for the chunk
 func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, error) {
 	lease, doesLeaseExist := master.LeaseGrants[chunkHandle]
-	chunkServers, ok := master.ChunkHandler[chunkHandle]
+	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
 	if !ok {
 		return "", nil, errors.New("chunk servers do not exist for this chunk handle")
 	}
@@ -294,9 +294,9 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 	}
 	chunkHandle := master.FileMap[fileName][len(master.FileMap[fileName])-1].ChunkHandle
 	// if chunk servers have not been designated for the chunkHandle then we choose them
-	_, chunkServerExists := master.ChunkHandler[chunkHandle]
+	_, chunkServerExists := master.ChunkServerHandler[chunkHandle]
 	if !chunkServerExists {
-		master.ChunkHandler[chunkHandle] = master.chooseChunkServers()
+		master.ChunkServerHandler[chunkHandle] = master.chooseChunkServers()
 	}
 	// assign primary and secondary chunkServers
 	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
@@ -484,7 +484,12 @@ func (master *Master) readCheckpoint() error {
 				}
 			}
 			if !isDeletedFile {
+				chunkHandles:=make([]int64,0)
+				for _,val:=range(chunks){
+					chunkHandles = append(chunkHandles, val.ChunkHandle)
+				}
 				master.FileMap[file] = chunks
+				master.ChunkHandles = append(master.ChunkHandles, chunkHandles...)
 			}
 			offset+=bytesRead
 		}

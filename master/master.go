@@ -25,7 +25,8 @@ type Master struct {
 	Port                   string
 	LeaseGrants            map[int64]*Lease
 	FileMap                map[string][]Chunk // maps file names to array of chunkIds
-	ChunkHandler           map[int64][]string // maps chunkIds to the chunkServers which store those chunks
+	ChunkHandles           []int64      // contains all the chunkHandles of all the non-deleted files
+	ChunkServerHandler     map[int64][]string // maps chunkIds to the chunkServers which store those chunks
 	mu                     sync.Mutex
 }
 
@@ -66,7 +67,8 @@ func NewMaster(port string,inTestMode bool) (*Master, error) {
 		idGenerator:  node,
 		Port:         port,
 		FileMap:      make(map[string][]Chunk),
-		ChunkHandler: make(map[int64][]string),
+		ChunkHandles: make([]int64, 0),
+		ChunkServerHandler: make(map[int64][]string),
 		LeaseGrants:  make(map[int64]*Lease),
 	}
 	opLogger, err := NewOpLogger(master)
@@ -95,7 +97,7 @@ func (master *Master) writeMasterReadResponse(conn net.Conn, readResponse common
 
 // the master handles the readRequest from the client by replying with the chunkHandle and the chunkServers
 // if the master does not have any metadata on the file, it replies with an error Message
-func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []byte) error {
+func (master *Master) handleClientMasterReadRequest(conn net.Conn, requestBodyBytes []byte) error {
 	request, err := helper.DecodeMessage[common.ClientMasterReadRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Decoding failed:", err)
@@ -115,7 +117,10 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 	readResponse.ChunkHandle = chunk.ChunkHandle
 	readResponse.ChunkServers = chunkServers
 	readResponse.ErrorMessage = ""
-	master.writeMasterReadResponse(conn, readResponse)
+	err=master.writeMasterReadResponse(conn, readResponse)
+	if err!=nil{
+		return err
+	}
 	return nil
 }
 
@@ -257,6 +262,16 @@ is free to delete its replicas of such chunks.
 // 	conn.Write(heartbeatResponseInBytes)
 
 // }
+
+func (master *Master) isChunkDeleted(chunkHandle int64) bool{
+
+	for _,val:=range(master.ChunkHandles){
+		if(val==chunkHandle){
+			return false
+		}
+	}
+	return true
+}
 func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestBodyBytes []byte) error {
 	heartBeatResponse, err := helper.DecodeMessage[common.ChunkServerToMasterHeartbeatResponse](requestBodyBytes)
 	if err != nil {
@@ -264,10 +279,10 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 	}
 	master.mu.Lock()
 	chunksToBeDeleted := make([]int64, 0)
-	for _, chunkId := range heartBeatResponse.ChunksPresent {
-		_, presentOnMaster := master.ChunkHandler[chunkId]
-		if !presentOnMaster {
-			chunksToBeDeleted = append(chunksToBeDeleted, chunkId)
+	for _, chunkHandle := range heartBeatResponse.ChunksPresent {
+		isChunkDeleted:=master.isChunkDeleted(chunkHandle)
+		if isChunkDeleted {
+			chunksToBeDeleted = append(chunksToBeDeleted, chunkHandle)
 		}
 	}
 	master.mu.Unlock()
@@ -304,7 +319,7 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	}
 	master.mu.Lock()
 	for _, chunkId := range handshake.ChunkHandles {
-		master.ChunkHandler[chunkId] = append(master.ChunkHandler[chunkId], conn.RemoteAddr().String())
+		master.ChunkServerHandler[chunkId] = append(master.ChunkServerHandler[chunkId], handshake.Port)
 	}
 	handshakeResponse := common.MasterChunkServerHandshakeResponse{
 		Message: "Handshake successful",
@@ -448,7 +463,7 @@ func (master *Master) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-			err = master.handleMasterReadRequest(conn, messageBytes)
+			err = master.handleClientMasterReadRequest(conn, messageBytes)
 			if err != nil {
 				return
 			}
