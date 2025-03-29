@@ -114,13 +114,13 @@ func TestGetMetadataForFile(t *testing.T) {
 	t.Run("should successfully retrieve metadata for existing file and chunk", func(t *testing.T) {
 		// Create a Master instance with test data
 		master := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"existing-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 					{ChunkHandle: 2, ChunkSize: 2048},
 				},
 			},
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1", "server2"},
 				2: {"server3", "server4"},
 			},
@@ -139,8 +139,8 @@ func TestGetMetadataForFile(t *testing.T) {
 	// passing
 	t.Run("should return error when file does not exist", func(t *testing.T) {
 		master := &Master{
-			fileMap:      map[string][]Chunk{},
-			chunkHandler: map[int64][]string{},
+			FileMap:      map[string][]Chunk{},
+			ChunkHandler: map[int64][]string{},
 			mu:          sync.Mutex{},
 		}
 
@@ -155,12 +155,12 @@ func TestGetMetadataForFile(t *testing.T) {
 	// passing 
 	t.Run("should return error when chunk index is out of bounds", func(t *testing.T) {
 		master := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"existing-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			chunkHandler: map[int64][]string{},
+			ChunkHandler: map[int64][]string{},
 			mu:          sync.Mutex{},
 		}
 
@@ -175,12 +175,12 @@ func TestGetMetadataForFile(t *testing.T) {
 	// passing 
 	t.Run("should return error when no chunk servers exist for chunk", func(t *testing.T) {
 		master := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"existing-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			chunkHandler: map[int64][]string{},
+			ChunkHandler: map[int64][]string{},
 			mu:          sync.Mutex{},
 		}
 
@@ -194,12 +194,12 @@ func TestGetMetadataForFile(t *testing.T) {
 
 	t.Run("should handle concurrent access safely", func(t *testing.T) {
 		master := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"existing-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1", "server2"},
 			},
 			mu: sync.Mutex{},
@@ -227,10 +227,10 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should choose primary and secondary when no lease exists", func(t *testing.T) {
 		master := &Master{
 			inTestMode:     true,
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
-			leaseGrants: map[int64]*Lease{},
+			LeaseGrants: map[int64]*Lease{},
 			mu:          sync.Mutex{},
 		}
 
@@ -243,7 +243,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		assert.NotContains(t, secondaryServers, primaryServer)
 
 		// Verify lease was created
-		lease, exists := master.leaseGrants[1]
+		lease, exists := master.LeaseGrants[1]
 		assert.True(t, exists)
 		assert.Equal(t, primaryServer, lease.server)
 		assert.NotZero(t, lease.grantTime)
@@ -252,8 +252,8 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should return error when no chunk servers exist", func(t *testing.T) {
 		master := &Master{
 			inTestMode:     true,
-			chunkHandler:   map[int64][]string{},
-			leaseGrants:    map[int64]*Lease{},
+			ChunkHandler:   map[int64][]string{},
+			LeaseGrants:    map[int64]*Lease{},
 			mu:             sync.Mutex{},
 		}
 
@@ -269,10 +269,10 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		initialGrantTime := time.Now().Add(-30 * time.Second)
 		master := &Master{
 			inTestMode: true,
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
-			leaseGrants: map[int64]*Lease{
+			LeaseGrants: map[int64]*Lease{
 				1: {
 					server:    "server1",
 					grantTime: initialGrantTime,
@@ -289,7 +289,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		assert.NotContains(t, secondaryServers, "server1")
 
 		// Verify lease was renewed
-		lease, exists := master.leaseGrants[1]
+		lease, exists := master.LeaseGrants[1]
 		assert.True(t, exists)
 		assert.True(t, lease.grantTime.After(initialGrantTime))
 	})
@@ -298,10 +298,10 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		expiredTime := time.Now().Add(-120 * time.Second)
 		master := &Master{
 			inTestMode: true,
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
-			leaseGrants: map[int64]*Lease{
+			LeaseGrants: map[int64]*Lease{
 				1: {
 					server:    "server1",
 					grantTime: expiredTime,
@@ -319,7 +319,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		assert.NotContains(t, secondaryServers, primaryServer)
 
 		// Verify lease was updated
-		lease, exists := master.leaseGrants[1]
+		lease, exists := master.LeaseGrants[1]
 		assert.True(t, exists)
 		assert.Equal(t, primaryServer, lease.server)
 		assert.NotZero(t, lease.grantTime)
@@ -328,10 +328,10 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should handle single server scenario", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1"},
 			},
-			leaseGrants: map[int64]*Lease{},
+			LeaseGrants: map[int64]*Lease{},
 			mu:          sync.Mutex{},
 		}
 
@@ -345,10 +345,10 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 	t.Run("should be thread-safe", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			chunkHandler: map[int64][]string{
+			ChunkHandler: map[int64][]string{
 				1: {"server1", "server2", "server3"},
 			},
-			leaseGrants: map[int64]*Lease{},
+			LeaseGrants: map[int64]*Lease{},
 			mu:          sync.Mutex{},
 		}
 
@@ -404,7 +404,7 @@ func TestDeleteFile(t *testing.T) {
 		// Prepare test data
 		master := &Master{
 			inTestMode: true,
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 					{ChunkHandle: 2, ChunkSize: 2048},
@@ -420,14 +420,14 @@ func TestDeleteFile(t *testing.T) {
 		assert.NoError(t, err)
 		
 		// Check that original file is deleted
-		_, exists := master.fileMap["test-file"]
+		_, exists := master.FileMap["test-file"]
 		assert.False(t, exists)
 		
 		// Check that new deleted file exists with same chunks
 		deletedFileName := master.findDeletedFileName("test-file")
 		assert.NotEmpty(t, deletedFileName)
 		
-		chunks, exists := master.fileMap[deletedFileName]
+		chunks, exists := master.FileMap[deletedFileName]
 		assert.True(t, exists)
 		assert.Len(t, chunks, 2)
 		assert.Equal(t, int64(1), chunks[0].ChunkHandle)
@@ -437,7 +437,7 @@ func TestDeleteFile(t *testing.T) {
 	t.Run("should return error for non-existing file", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			fileMap:    map[string][]Chunk{},
+			FileMap:    map[string][]Chunk{},
 			mu:         sync.Mutex{},
 		}
 
@@ -450,7 +450,7 @@ func TestDeleteFile(t *testing.T) {
 	t.Run("should handle file deletion in test mode", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
@@ -461,14 +461,14 @@ func TestDeleteFile(t *testing.T) {
 		err := master.deleteFile("test-file")
 
 		assert.NoError(t, err)
-		_, exists := master.fileMap["test-file"]
+		_, exists := master.FileMap["test-file"]
 		assert.False(t, exists)
 	})
 
 	t.Run("should be thread-safe", func(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test-file": {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
@@ -495,14 +495,14 @@ func TestDeleteFile(t *testing.T) {
 		close(errorChan)
 
 		// Verify file is deleted
-		_, exists := master.fileMap["test-file"]
+		_, exists := master.FileMap["test-file"]
 		assert.False(t, exists)
 	})
 }
 
 // Helper method to find the deleted file name
 func (master *Master) findDeletedFileName(originalFileName string) string {
-	for fileName := range master.fileMap {
+	for fileName := range master.FileMap {
 		if strings.Contains(fileName, originalFileName) && strings.Contains(fileName, ".deleted") {
 			return fileName
 		}
@@ -520,7 +520,7 @@ func TestCreateNewChunk(t *testing.T) {
 		master := &Master{
 			inTestMode:  true,
 			idGenerator:node,
-			fileMap:     make(map[string][]Chunk),
+			FileMap:     make(map[string][]Chunk),
 			mu:          sync.Mutex{},
 		}
 
@@ -532,8 +532,8 @@ func TestCreateNewChunk(t *testing.T) {
 		// Assertions
 		assert.NoError(t, err)
 		
-		// Check that file exists in fileMap
-		chunks, exists := master.fileMap[fileName]
+		// Check that file exists in FileMap
+		chunks, exists := master.FileMap[fileName]
 		assert.True(t, exists)
 		assert.Len(t, chunks, 1)
 		
@@ -549,7 +549,7 @@ func TestCreateNewChunk(t *testing.T) {
 		master := &Master{
 			inTestMode:  true,
 			idGenerator:node,
-			fileMap:     make(map[string][]Chunk),
+			FileMap:     make(map[string][]Chunk),
 			mu:          sync.Mutex{},
 		}
 
@@ -561,8 +561,8 @@ func TestCreateNewChunk(t *testing.T) {
 		// Assertions
 		assert.NoError(t, err)
 		
-		// Check that file exists in fileMap
-		chunks, exists := master.fileMap[fileName]
+		// Check that file exists in FileMap
+		chunks, exists := master.FileMap[fileName]
 		assert.True(t, exists)
 		assert.Len(t, chunks, 1)
 		
@@ -576,7 +576,7 @@ func TestCreateNewChunk(t *testing.T) {
 		master := &Master{
 			inTestMode:  true,
 			idGenerator:node,
-			fileMap:     make(map[string][]Chunk),
+			FileMap:     make(map[string][]Chunk),
 			mu:          sync.Mutex{},
 		}
 
@@ -591,7 +591,7 @@ func TestCreateNewChunk(t *testing.T) {
 		assert.NoError(t, err2)
 		
 		// Check that file has multiple chunks
-		chunks, exists := master.fileMap[fileName]
+		chunks, exists := master.FileMap[fileName]
 		assert.True(t, exists)
 		assert.Len(t, chunks, 2)
 		
@@ -604,7 +604,7 @@ func TestCreateNewChunk(t *testing.T) {
 		master := &Master{
 			inTestMode:  true,
 			idGenerator: node,
-			fileMap:     make(map[string][]Chunk),
+			FileMap:     make(map[string][]Chunk),
 			mu:          sync.Mutex{},
 		}
 
@@ -642,8 +642,8 @@ func TestCreateNewChunk(t *testing.T) {
 		master.mu.Lock()
 		defer master.mu.Unlock()
 
-		chunks, exists := master.fileMap[fileName]
-		assert.True(t, exists, "File should exist in fileMap")
+		chunks, exists := master.FileMap[fileName]
+		assert.True(t, exists, "File should exist in FileMap")
 		assert.Len(t, chunks, numChunks, "Number of chunks should match number of creation attempts")
 
 		// Verify unique chunk handles
@@ -664,7 +664,7 @@ func TestHandleChunkCreation(t *testing.T) {
 	t.Run("should successfully create a new file and chunk", func(t *testing.T) {
 		// Prepare test data
 	
-		// Initialize serverList with test servers
+		// Initialize ServerList with test servers
 		pq := &ServerList{}
 		heap.Init(pq)
 		
@@ -683,11 +683,11 @@ func TestHandleChunkCreation(t *testing.T) {
 		master := &Master{
 			inTestMode:   true,
 			idGenerator:  node,
-			fileMap:      make(map[string][]Chunk),
-			chunkHandler: make(map[int64][]string),
-			leaseGrants: make(map[int64]*Lease),
+			FileMap:      make(map[string][]Chunk),
+			ChunkHandler: make(map[int64][]string),
+			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
-			serverList:   pq,
+			ServerList:   pq,
 		}
 
 		fileName := "test-file"
@@ -701,16 +701,16 @@ func TestHandleChunkCreation(t *testing.T) {
 		assert.NotEmpty(t, primaryServer)
 		assert.Len(t, secondaryServers, 2) // Assuming choosePrimaryAndSecondary returns 1 primary and 2 secondary
 
-		// Check that file exists in fileMap
-		chunks, exists := master.fileMap[fileName]
+		// Check that file exists in FileMap
+		chunks, exists := master.FileMap[fileName]
 		assert.True(t, exists)
 		assert.Len(t, chunks, 1)
 
 		// Verify chunk handle matches
 		assert.Equal(t, chunks[0].ChunkHandle, chunkHandle)
 
-		// Verify chunkHandler has been populated
-		createdServers, exists:= master.chunkHandler[chunkHandle]
+		// Verify ChunkHandler has been populated
+		createdServers, exists:= master.ChunkHandler[chunkHandle]
 		assert.True(t, exists)
 		assert.Len(t, createdServers, 3) // Should contain 3 servers from chooseChunkServers
 
@@ -721,7 +721,7 @@ func TestHandleChunkCreation(t *testing.T) {
 		// Prepare test data
 		
 
-		// Initialize serverList with test servers
+		// Initialize ServerList with test servers
 		pq := &ServerList{}
 		heap.Init(pq)
 		
@@ -740,18 +740,18 @@ func TestHandleChunkCreation(t *testing.T) {
 		master := &Master{
 			inTestMode:   true,
 			idGenerator:  node,
-			fileMap:      make(map[string][]Chunk),
-			chunkHandler: make(map[int64][]string),
-			leaseGrants: make(map[int64]*Lease),
+			FileMap:      make(map[string][]Chunk),
+			ChunkHandler: make(map[int64][]string),
+			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
-			serverList:   pq,
+			ServerList:   pq,
 		}
 
 		fileName := "test-file"
 		
 		// Create a file and first chunk
 		existingChunk := Chunk{ChunkHandle: 12345}
-		master.fileMap[fileName] = []Chunk{existingChunk}
+		master.FileMap[fileName] = []Chunk{existingChunk}
 
 		// Perform chunk creation for existing file
 		chunkHandle, primaryServer, secondaryServers, err := master.handleChunkCreation(fileName)
@@ -763,7 +763,7 @@ func TestHandleChunkCreation(t *testing.T) {
 		assert.Len(t, secondaryServers, 2)
 
 		// File should still exist with just the original chunk
-		chunks, exists := master.fileMap[fileName]
+		chunks, exists := master.FileMap[fileName]
 		assert.True(t, exists)
 		assert.Len(t, chunks, 1)
 		
@@ -772,7 +772,7 @@ func TestHandleChunkCreation(t *testing.T) {
 
 	t.Run("should reuse existing chunk servers if already assigned", func(t *testing.T) {
 
-		// Initialize serverList with test servers
+		// Initialize ServerList with test servers
 		pq := &ServerList{}
 		heap.Init(pq)
 		
@@ -790,22 +790,22 @@ func TestHandleChunkCreation(t *testing.T) {
 		master := &Master{
 			inTestMode:   true,
 			idGenerator:  node,
-			fileMap:      make(map[string][]Chunk),
-			chunkHandler: make(map[int64][]string),
-			leaseGrants: make(map[int64]*Lease),
+			FileMap:      make(map[string][]Chunk),
+			ChunkHandler: make(map[int64][]string),
+			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
-			serverList:   pq,
+			ServerList:   pq,
 		}
 
 		fileName := "test-file"
 		chunkHandle := int64(12345)
 		
 		// Create a pre-existing file with a chunk
-		master.fileMap[fileName] = []Chunk{{ChunkHandle: chunkHandle}}
+		master.FileMap[fileName] = []Chunk{{ChunkHandle: chunkHandle}}
 		
 		// Pre-assign chunk servers for this chunk handle
 		preassignedServers := []string{"server-a", "server-b", "server-c"}
-		master.chunkHandler[chunkHandle] = preassignedServers
+		master.ChunkHandler[chunkHandle] = preassignedServers
 
 		// Mock that choosePrimaryAndSecondary returns the expected values from preassigned servers
 		// This would typically need to be implemented in the Master struct for a real test
@@ -823,14 +823,14 @@ func TestHandleChunkCreation(t *testing.T) {
 			assert.Contains(t, preassignedServers, server)
 		}
 		
-		// The serverList should not have been modified (no new servers chosen)
-		assert.Len(t, master.chunkHandler[chunkHandle], len(preassignedServers))
-		assert.Equal(t, preassignedServers, master.chunkHandler[chunkHandle])
+		// The ServerList should not have been modified (no new servers chosen)
+		assert.Len(t, master.ChunkHandler[chunkHandle], len(preassignedServers))
+		assert.Equal(t, preassignedServers, master.ChunkHandler[chunkHandle])
 	})
 
 	// t.Run("should handle error from choosing primary and secondary", func(t *testing.T) {
 
-	// 	// Initialize serverList with test servers
+	// 	// Initialize ServerList with test servers
 	// 	pq := &ServerList{}
 	// 	heap.Init(pq)
 		
@@ -839,10 +839,10 @@ func TestHandleChunkCreation(t *testing.T) {
 	// 	master := &Master{
 	// 		inTestMode:   true,
 	// 		idGenerator:  node,
-	// 		fileMap:      make(map[string][]Chunk),
-	// 		chunkHandler: make(map[int64][]string),
+	// 		FileMap:      make(map[string][]Chunk),
+	// 		ChunkHandler: make(map[int64][]string),
 	// 		mu:           sync.Mutex{},
-	// 		serverList:   pq,
+	// 		ServerList:   pq,
 	// 	}
 
 	// 	fileName := "test-file"
@@ -856,14 +856,14 @@ func TestHandleChunkCreation(t *testing.T) {
 	// 	// 1. An error is returned from handleChunkCreation
 	// 	// 2. The file is still created
 	// 	// 3. The chunk is still added to the file
-	// 	// 4. chunkHandler is populated
+	// 	// 4. ChunkHandler is populated
 	// 	// 5. But the returned values indicate an error state
 	// })
 
 	t.Run("should create multiple chunks for the same file in concurrent scenario", func(t *testing.T) {
 	
 
-		// Initialize serverList with test servers
+		// Initialize ServerList with test servers
 		pq := &ServerList{}
 		heap.Init(pq)
 		
@@ -878,11 +878,11 @@ func TestHandleChunkCreation(t *testing.T) {
 		master := &Master{
 			inTestMode:   true, // Test mode to avoid writing to log
 			idGenerator:  node,
-			fileMap:      make(map[string][]Chunk),
-			chunkHandler: make(map[int64][]string),
-			leaseGrants: make(map[int64]*Lease),
+			FileMap:      make(map[string][]Chunk),
+			ChunkHandler: make(map[int64][]string),
+			LeaseGrants: make(map[int64]*Lease),
 			mu:           sync.Mutex{},
-			serverList:   pq,
+			ServerList:   pq,
 		}
 
 		fileName := "concurrent-test-file"
@@ -937,7 +937,7 @@ func TestHandleChunkCreation(t *testing.T) {
 		master.mu.Lock()
 		defer master.mu.Unlock()
 		
-		_, exists := master.fileMap[fileName]
+		_, exists := master.FileMap[fileName]
 		assert.True(t, exists)
 		
 	})
@@ -947,7 +947,7 @@ func TestBuildCheckpoint(t *testing.T) {
 	t.Run("should successfully create checkpoint with multiple files", func(t *testing.T) {
 		// Setup
 		master := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test_file1": {
 					{ChunkHandle: 1},
 					{ChunkHandle: 2},
@@ -974,7 +974,7 @@ func TestBuildCheckpoint(t *testing.T) {
 	t.Run("should successfully create checkpoint with single file", func(t *testing.T) {
 		// Setup
 		master := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test_file_single": {
 					{ChunkHandle: 1},
 				},
@@ -997,7 +997,7 @@ func TestBuildCheckpoint(t *testing.T) {
 	t.Run("should successfully create checkpoint with empty file map", func(t *testing.T) {
 		// Setup
 		master := &Master{
-			fileMap:    make(map[string][]Chunk),
+			FileMap:    make(map[string][]Chunk),
 			inTestMode: true,
 		}
 		defer os.Remove("checkpoint.chk")
@@ -1019,7 +1019,7 @@ func TestReadCheckpoint(t *testing.T) {
 		// Setup
 		master := &Master{
 			inTestMode: true,
-			fileMap:    make(map[string][]Chunk),
+			FileMap:    make(map[string][]Chunk),
 		}
 
 		defer os.Remove("checkpoint.chk")
@@ -1037,7 +1037,7 @@ func TestReadCheckpoint(t *testing.T) {
 
 		// Create a master with test data and build checkpoint
 		masterWithData := &Master{
-			fileMap:    testFiles,
+			FileMap:    testFiles,
 			inTestMode: true,
 		}
 		err := masterWithData.buildCheckpoint()
@@ -1050,11 +1050,11 @@ func TestReadCheckpoint(t *testing.T) {
 		}
 
 		// Verify the read data matches the original
-		assert.Equal(t, len(testFiles), len(master.fileMap), 
+		assert.Equal(t, len(testFiles), len(master.FileMap), 
 			"Number of files should match after checkpoint read")
 
 		for file, chunks := range testFiles {
-			readChunks, exists := master.fileMap[file]
+			readChunks, exists := master.FileMap[file]
 			assert.True(t, exists, "File %s should exist in read checkpoint", file)
 
 			assert.Equal(t, len(chunks), len(readChunks), 
@@ -1071,7 +1071,7 @@ func TestReadCheckpoint(t *testing.T) {
 		// Setup
 		master := &Master{
 			inTestMode: true,
-			fileMap:    make(map[string][]Chunk),
+			FileMap:    make(map[string][]Chunk),
 		}
 
 		defer os.Remove("checkpoint.chk")
@@ -1085,7 +1085,7 @@ func TestReadCheckpoint(t *testing.T) {
 
 		// Create a master with test data and build checkpoint
 		masterWithData := &Master{
-			fileMap:    testFiles,
+			FileMap:    testFiles,
 			inTestMode: true,
 		}
 		err := masterWithData.buildCheckpoint()
@@ -1096,7 +1096,7 @@ func TestReadCheckpoint(t *testing.T) {
 		assert.Nil(t, err, "Should read checkpoint without error")
 
 		// Verify the read data matches the original
-		assert.Equal(t, len(testFiles), len(master.fileMap), 
+		assert.Equal(t, len(testFiles), len(master.FileMap), 
 			"Number of files should match after checkpoint read")
 	})
 }
@@ -1107,7 +1107,7 @@ func TestCheckpointWorkflow(t *testing.T) {
 
 		// Setup original master with test data
 		originalMaster := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test_file1": {
 					{ChunkHandle: 1},
 					{ChunkHandle: 2},
@@ -1126,7 +1126,7 @@ func TestCheckpointWorkflow(t *testing.T) {
 		// Create a new master to read the checkpoint
 		restoredMaster := &Master{
 			inTestMode: true,
-			fileMap:    make(map[string][]Chunk),
+			FileMap:    make(map[string][]Chunk),
 		}
 
 		// Read checkpoint
@@ -1134,11 +1134,11 @@ func TestCheckpointWorkflow(t *testing.T) {
 		assert.Nil(t, err, "Should read checkpoint without error")
 
 		// Verify restored data matches original
-		assert.Equal(t, len(originalMaster.fileMap), len(restoredMaster.fileMap), 
-			"Restored fileMap size should match original")
+		assert.Equal(t, len(originalMaster.FileMap), len(restoredMaster.FileMap), 
+			"Restored FileMap size should match original")
 
-		for file, originalChunks := range originalMaster.fileMap {
-			restoredChunks, exists := restoredMaster.fileMap[file]
+		for file, originalChunks := range originalMaster.FileMap {
+			restoredChunks, exists := restoredMaster.FileMap[file]
 			assert.True(t, exists, "File %s should exist in restored checkpoint", file)
 
 			assert.Equal(t, len(originalChunks), len(restoredChunks), 
@@ -1156,7 +1156,7 @@ func TestCheckpointWorkflow(t *testing.T) {
 
 		// Setup original master with single file test data
 		originalMaster := &Master{
-			fileMap: map[string][]Chunk{
+			FileMap: map[string][]Chunk{
 				"test_file_single": {
 					{ChunkHandle: 1},
 				},
@@ -1171,7 +1171,7 @@ func TestCheckpointWorkflow(t *testing.T) {
 		// Create a new master to read the checkpoint
 		restoredMaster := &Master{
 			inTestMode: true,
-			fileMap:    make(map[string][]Chunk),
+			FileMap:    make(map[string][]Chunk),
 		}
 
 		// Read checkpoint
@@ -1179,8 +1179,8 @@ func TestCheckpointWorkflow(t *testing.T) {
 		assert.Nil(t, err, "Should read checkpoint without error")
 
 		// Verify restored data matches original
-		assert.Equal(t, len(originalMaster.fileMap), len(restoredMaster.fileMap), 
-			"Restored fileMap size should match original")
+		assert.Equal(t, len(originalMaster.FileMap), len(restoredMaster.FileMap), 
+			"Restored FileMap size should match original")
 	})
 }
 

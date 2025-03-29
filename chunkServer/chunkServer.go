@@ -3,9 +3,6 @@ package chunkserver
 import (
 	"encoding/binary"
 	"errors"
-	"github.com/involk-secure-1609/goGFS/common"
-	"github.com/involk-secure-1609/goGFS/helper"
-	lrucache "github.com/involk-secure-1609/goGFS/lruCache"
 	"io"
 	"log"
 	"math/rand/v2"
@@ -13,7 +10,12 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/involk-secure-1609/goGFS/common"
+	"github.com/involk-secure-1609/goGFS/helper"
+	lrucache "github.com/involk-secure-1609/goGFS/lruCache"
 )
 
 type CommitRequest struct {
@@ -26,15 +28,19 @@ type CommitResponse struct {
 	commitResponse *common.PrimaryChunkCommitResponse
 }
 type ChunkServer struct {
-	chunkDirectory string
-	commitRequestChannel chan CommitRequest
-	lruCache             *lrucache.LRUBufferCache
-	mu                   sync.Mutex
-	masterPort           string
-	masterConnection     net.Conn
-	address              *net.TCPAddr
-	chunkHandles         []int64
-	leaseGrants          map[int64]*LeaseGrant
+	InTestMode                 bool
+	HeartbeatRequestsReceived  atomic.Int32
+	HeartbeatResponsesReceived atomic.Int32
+	listener                   net.Listener
+	ChunkDirectory             string
+	commitRequestChannel       chan CommitRequest
+	lruCache                   *lrucache.LRUBufferCache
+	mu                         sync.Mutex
+	MasterPort                 string
+	MasterConnection           net.Conn
+	address                    *net.TCPAddr
+	ChunkHandles               []int64
+	leaseGrants                map[int64]*LeaseGrant
 }
 
 type LeaseGrant struct {
@@ -45,16 +51,18 @@ type LeaseGrant struct {
 
 type InterChunkServerResponseHandler struct {
 	responseChannel chan int
-	wg sync.WaitGroup
+	wg              sync.WaitGroup
 }
 
-func NewChunkServer(chunkDirectory string) *ChunkServer {
+// tested
+func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 
 	chunkServer := &ChunkServer{
-		chunkHandles: make([]int64, 0),
-		leaseGrants: make(map[int64]*LeaseGrant),
-		mu: sync.Mutex{},
-		chunkDirectory: chunkDirectory,
+		MasterPort:           masterPort,
+		ChunkHandles:         make([]int64, 0),
+		leaseGrants:          make(map[int64]*LeaseGrant),
+		mu:                   sync.Mutex{},
+		ChunkDirectory:       chunkDirectory,
 		commitRequestChannel: make(chan CommitRequest),
 		lruCache:             lrucache.NewLRUBufferCache(100),
 	}
@@ -215,7 +223,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		Status:       true,
 		ErrorMessage: "",
 	}
-	// if there is any error during the ecoding we returna an error to the priamry saying
+	// if there is any error during the ecoding we returna an error to the primary saying
 	// that the write has failed.
 	request, err := helper.DecodeMessage[common.InterChunkServerCommitRequest](requestBodyBytes)
 	if err != nil {
@@ -431,7 +439,7 @@ func (chunkServer *ChunkServer) sendLeaseExtensionRequest(chunkHandle int64) {
 	}
 	requestBytes, _ := helper.EncodeMessage(common.MasterChunkServerLeaseRequestType, request)
 
-	chunkServer.masterConnection.Write(requestBytes)
+	chunkServer.MasterConnection.Write(requestBytes)
 
 }
 
@@ -573,22 +581,28 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 
 /* Master->ChunkServer */
 func (chunkServer *ChunkServer) handleMasterHeartbeatRequest(requestBodyBytes []byte) error {
-	_, err := helper.DecodeMessage[common.MasterToChunkServerHeartbeatRequest](requestBodyBytes)
+	heartBeatRequest, err := helper.DecodeMessage[common.MasterToChunkServerHeartbeatRequest](requestBodyBytes)
 	if err != nil {
 		return err
 	}
 
-	chunkServer.mu.Lock()
-	defer chunkServer.mu.Unlock()
-
-	heartBeatResponse := common.ChunkServerToMasterHeartbeatResponse{
-		ChunksPresent: chunkServer.chunkHandles,
+	if heartBeatRequest.Heartbeat != "HEARTBEAT" {
+		return errors.New("heartbeat message is not correct")
 	}
+
+	if chunkServer.InTestMode {
+		chunkServer.HeartbeatRequestsReceived.Add(1)
+	}
+	chunkServer.mu.Lock()
+	heartBeatResponse := common.ChunkServerToMasterHeartbeatResponse{
+		ChunksPresent: chunkServer.ChunkHandles,
+	}
+	chunkServer.mu.Unlock()
 	responseBodyBytes, err := helper.EncodeMessage(common.ChunkServerToMasterHeartbeatResponseType, heartBeatResponse)
 	if err != nil {
 		return err
 	}
-	_, err = chunkServer.masterConnection.Write(responseBodyBytes)
+	_, err = chunkServer.MasterConnection.Write(responseBodyBytes)
 	if err != nil {
 		return err
 	}
@@ -613,13 +627,19 @@ func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes [
 // 	}
 
 // 	heartBeatBytes, _ := helper.EncodeMessage(common.MasterChunkServerHeartbeatType, heartbeatRequest)
-// 	chunkServer.masterConnection.Write(heartBeatBytes)
+// 	chunkServer.MasterConnection.Write(heartBeatBytes)
 // }
 
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
+
+	log.Println("chunkServer " + chunkServer.ChunkDirectory + " received heartbeat response from master with chunks to delete")
 	heartBeatResponse, _ := helper.DecodeMessage[common.MasterToChunkServerHeartbeatResponse](messageBody)
 	for _, chunkHandle := range heartBeatResponse.ChunksToBeDeleted {
 		go chunkServer.deleteChunk(chunkHandle)
+	}
+
+	if chunkServer.InTestMode {
+		chunkServer.HeartbeatResponsesReceived.Add(1)
 	}
 }
 
@@ -657,7 +677,7 @@ func (chunkServer *ChunkServer) handleMasterLeaseRequest(requestBodyBytes []byte
 // This is just a standard response from the master which acknowledges that it has
 // received the handshake request.
 func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
-	messageType, _, err := helper.ReadMessage(chunkServer.masterConnection)
+	messageType, _, err := helper.ReadMessage(chunkServer.MasterConnection)
 	if err != nil {
 		log.Println(err)
 		return err
@@ -669,18 +689,21 @@ func (chunkServer *ChunkServer) handleMasterHandshakeResponse() error {
 	return nil
 }
 
+// tested
 /* ChunkServer->Master */
-// We send all the chunkHandles which are present on the chunk server to the master
+// We send all the ChunkHandles which are present on the chunk server to the master
 func (chunkServer *ChunkServer) initiateHandshake() error {
+	log.Println("logging before handshake" + chunkServer.address.String())
 	handshakeBody := common.MasterChunkServerHandshakeRequest{
-		ChunkHandles: chunkServer.chunkHandles,
+		ChunkHandles: chunkServer.ChunkHandles,
+		Port:         chunkServer.address.String(),
 	}
 
 	handshakeBytes, err := helper.EncodeMessage(common.MasterChunkServerHandshakeRequestType, handshakeBody)
 	if err != nil {
 		return err
 	}
-	_, err = chunkServer.masterConnection.Write(handshakeBytes)
+	_, err = chunkServer.MasterConnection.Write(handshakeBytes)
 	if err != nil {
 		return err
 	}
@@ -693,17 +716,18 @@ func (chunkServer *ChunkServer) initiateHandshake() error {
 	return nil
 }
 
+// tessted
 /* ChunkServer->Master */
 // The initial handshake which is exchanged between the chunkServer and the master
 // the chunkServer informs the master about all the chunks that reside on its server,
 // this way the master does not have to keep track of which chunk servers contain which chunks.
 // The chunk server itself serves as a source of truth regarding which chunks are present on it.
 func (chunkServer *ChunkServer) registerWithMaster() error {
-	conn, err := net.Dial("tcp", chunkServer.masterPort)
+	conn, err := net.Dial("tcp", ":"+chunkServer.MasterPort)
 	if err != nil {
 		return err
 	}
-	chunkServer.masterConnection = conn
+	chunkServer.MasterConnection = conn
 
 	err = chunkServer.initiateHandshake()
 	if err != nil {
@@ -817,34 +841,49 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 	}
 }
 
-func (chunkServer *ChunkServer) Start() {
+// tested
+func (chunkServer *ChunkServer) Start() (string, error) {
 
 	err := chunkServer.loadChunks()
 	if err != nil {
-		log.Panicf("Failed to start chunk server: %v", err)
+		return "", err
+		// log.Panicf("Failed to start chunk server: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "")
 	if err != nil {
-		log.Panicf("Failed to start chunk server: %v", err)
+		return "", err
 	}
+	chunkServer.listener = listener
+	log.Println(" chunkServer " + chunkServer.ChunkDirectory + " started on port " + listener.Addr().String())
 	addr := listener.Addr().(*net.TCPAddr)
-	chunkServer.address=addr
-	defer listener.Close()
-
-	log.Println("Chunk server listening on :8081")
+	chunkServer.address = addr
 
 	// Register with master server
+	log.Println(" trying to register with master")
 	if err := chunkServer.registerWithMaster(); err != nil {
-		log.Panicf("Failed to register with master server: %v", err)
+		log.Println("registration with master failed")
+		log.Println(err)
+		return "", err // log.Panicf("Failed to register with master server: %v", err)
 	}
+	log.Println(" successfully registered with master")
 	go chunkServer.startCommitRequestHandler()
-	go chunkServer.handleConnection(chunkServer.masterConnection)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
-			continue
+	go chunkServer.handleConnection(chunkServer.MasterConnection)
+	startWG := sync.WaitGroup{}
+	startWG.Add(1)
+	// Main loop to accept connections from clients
+	go func() {
+		startWG.Done()
+		defer listener.Close()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("Failed to accept connection: %v", err)
+				continue
+			}
+			go chunkServer.handleConnection(conn)
 		}
-		go chunkServer.handleConnection(conn)
-	}
+	}()
+	startWG.Wait()
+	log.Println(" chunkServer " + chunkServer.ChunkDirectory + " waiting to accept connections")
+	return addr.String(), nil
 }

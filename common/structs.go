@@ -45,6 +45,7 @@ const (
 
 type MasterChunkServerHandshakeRequest struct {
 	ChunkHandles []int64
+	Port string
 }
 
 type MasterChunkServerHandshakeResponse struct {

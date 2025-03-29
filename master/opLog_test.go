@@ -242,7 +242,7 @@ func TestReadAndWriteOpLog1(t *testing.T) {
 	fp.Close()
 
 	master := &Master{
-		fileMap: map[string][]Chunk{},
+		FileMap: map[string][]Chunk{},
 	}
 	opLogger, err = NewOpLogger(master)
 
@@ -280,7 +280,7 @@ func TestReadAndWriteOpLog1(t *testing.T) {
 	err=opLogger.readOpLog()
 	assert.Equal(t,nil,err)
 
-	chunkHandles,chunksExist:=master.fileMap[op.File]
+	chunkHandles,chunksExist:=master.FileMap[op.File]
 	assert.Equal(t,true,chunksExist)
 	assert.Equal(t,1,len(chunkHandles))
 	assert.Equal(t,op.ChunkHandle,chunkHandles[0].ChunkHandle)
@@ -298,7 +298,7 @@ func TestReadAndWriteOpLog2(t *testing.T) {
 	fp.Close()
 
 	master := &Master{
-		fileMap: map[string][]Chunk{},
+		FileMap: map[string][]Chunk{},
 	}
 	opLogger, err = NewOpLogger(master)
 
@@ -345,10 +345,10 @@ func TestReadAndWriteOpLog2(t *testing.T) {
 	err=opLogger.readOpLog()
 	assert.Equal(t,nil,err)
 
-	_,chunksExist:=master.fileMap[op1.File]
+	_,chunksExist:=master.FileMap[op1.File]
 	assert.Equal(t,false,chunksExist)
 
-	deletedChunkHandles,deletedChunksExist:=master.fileMap[op2.NewFileName]
+	deletedChunkHandles,deletedChunksExist:=master.FileMap[op2.NewFileName]
 	assert.Equal(t,true,deletedChunksExist)
 	assert.Equal(t,1,len(deletedChunkHandles))
 	assert.Equal(t,op1.ChunkHandle,deletedChunkHandles[0].ChunkHandle)

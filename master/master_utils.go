@@ -19,7 +19,7 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	master.mu.Lock()
 	defer master.mu.Unlock()
 
-	chunkList, ok := master.fileMap[filename]
+	chunkList, ok := master.FileMap[filename]
 	if !ok {
 		return Chunk{}, nil, errors.New("no chunks present for this file")
 	}
@@ -28,7 +28,7 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	}
 
 	chunk := chunkList[chunkIndex]
-	chunkServers, ok := master.chunkHandler[chunk.ChunkHandle]
+	chunkServers, ok := master.ChunkHandler[chunk.ChunkHandle]
 	if !ok {
 		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
 	}
@@ -45,7 +45,7 @@ func (master *Master) chooseChunkServers() []string {
 	// defer master.mu.Unlock()
 	servers := make([]*Server, 0)
 	for range 3 {
-		server:=master.serverList.Pop().(*Server)
+		server:=master.ServerList.Pop().(*Server)
 		servers=append(servers, server)
 	}
 
@@ -53,7 +53,7 @@ func (master *Master) chooseChunkServers() []string {
 	for i:=range(servers){
 		serverNames=append(serverNames,servers[i].server )
 		servers[i].NumberOfChunks++
-		master.serverList.Push(servers[i])
+		master.ServerList.Push(servers[i])
 	}
 	return serverNames
 }
@@ -128,8 +128,8 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 //	we first check if the lease is valid, if it isnt we do the same thing when there isnt a valid lease.
 //	If the lease is valid we renew the lease and choose new secondary servers for the chunk
 func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, error) {
-	lease, doesLeaseExist := master.leaseGrants[chunkHandle]
-	chunkServers, ok := master.chunkHandler[chunkHandle]
+	lease, doesLeaseExist := master.LeaseGrants[chunkHandle]
+	chunkServers, ok := master.ChunkHandler[chunkHandle]
 	if !ok {
 		return "", nil, errors.New("chunk servers do not exist for this chunk handle")
 	}
@@ -146,7 +146,7 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 				return "", nil, err
 			}
 		}
-		master.leaseGrants[chunkHandle] = newLease
+		master.LeaseGrants[chunkHandle] = newLease
 		return primaryServer, secondaryServers, nil
 	}
 
@@ -166,8 +166,8 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 		// if it isnt valid we choose new primary and secondary servers
 
 		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
-		master.leaseGrants[chunkHandle].grantTime = time.Now()
-		master.leaseGrants[chunkHandle].server = primaryServer
+		master.LeaseGrants[chunkHandle].grantTime = time.Now()
+		master.LeaseGrants[chunkHandle].server = primaryServer
 		if !master.inTestMode {
 			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
 			if err != nil {
@@ -180,9 +180,9 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 
 // finds the connection corresponding to a chunk server
 func (master *Master) findChunkServerConnection(server string) net.Conn {
-	for _, connection := range master.chunkServerConnections {
-		if connection.port == server {
-			return connection.conn
+	for _, connection := range master.ChunkServerConnections {
+		if connection.Port == server {
+			return connection.Conn
 		}
 	}
 
@@ -215,7 +215,7 @@ func (master *Master) grantLeaseToPrimaryServer(primaryServer string, chunkHandl
 // Before we make the metadata change we log the operation.
 func (master *Master) deleteFile(fileName string) error {
 	master.mu.Lock()
-	chunks, ok := master.fileMap[fileName]
+	chunks, ok := master.FileMap[fileName]
 	if !ok {
 		master.mu.Unlock()
 		return errors.New("file does not exist")
@@ -234,8 +234,8 @@ func (master *Master) deleteFile(fileName string) error {
 			return err
 		}
 	}
-	master.fileMap[newFileName] = chunks
-	delete(master.fileMap, fileName)
+	master.FileMap[newFileName] = chunks
+	delete(master.FileMap, fileName)
 	master.mu.Unlock()
 	return nil
 }
@@ -244,18 +244,18 @@ func (master *Master) deleteFile(fileName string) error {
 func (master *Master) tempDeleteFile(fileName string, newName string) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	chunks, ok := master.fileMap[fileName]
+	chunks, ok := master.FileMap[fileName]
 	if !ok {
 		return
 	}
-	delete(master.fileMap, fileName)
+	delete(master.FileMap, fileName)
 	var newFileName string
 	if newName == "" {
 		newFileName = fileName + "/" + time.Now().Format(time.DateTime) + "/" + ".deleted"
 	} else {
 		newFileName = newName
 	}
-	master.fileMap[newFileName] = chunks
+	master.FileMap[newFileName] = chunks
 }
 
 
@@ -274,9 +274,9 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 
 	// if the file does not exist the master creates a new one and
 	// creates a new chunk for that file
-	_, fileAlreadyExists := master.fileMap[fileName]
+	_, fileAlreadyExists := master.FileMap[fileName]
 	if !fileAlreadyExists {
-		master.fileMap[fileName] = make([]Chunk, 0)
+		master.FileMap[fileName] = make([]Chunk, 0)
 		chunk = Chunk{
 			ChunkHandle: master.generateNewChunkId(),
 		}
@@ -290,13 +290,13 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 				return -1, "", nil, err
 			}
 		}
-		master.fileMap[fileName] = append(master.fileMap[fileName], chunk)
+		master.FileMap[fileName] = append(master.FileMap[fileName], chunk)
 	}
-	chunkHandle := master.fileMap[fileName][len(master.fileMap[fileName])-1].ChunkHandle
+	chunkHandle := master.FileMap[fileName][len(master.FileMap[fileName])-1].ChunkHandle
 	// if chunk servers have not been designated for the chunkHandle then we choose them
-	_, chunkServerExists := master.chunkHandler[chunkHandle]
+	_, chunkServerExists := master.ChunkHandler[chunkHandle]
 	if !chunkServerExists {
-		master.chunkHandler[chunkHandle] = master.chooseChunkServers()
+		master.ChunkHandler[chunkHandle] = master.chooseChunkServers()
 	}
 	// assign primary and secondary chunkServers
 	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
@@ -320,7 +320,7 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 func (master *Master) addFileChunkMapping(file string, chunkHandle int64) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	master.fileMap[file] = append(master.fileMap[file], Chunk{ChunkHandle: chunkHandle})
+	master.FileMap[file] = append(master.FileMap[file], Chunk{ChunkHandle: chunkHandle})
 
 }
 
@@ -330,7 +330,7 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 		return err
 	}
 	// master
-	master.leaseGrants[leaseRequest.ChunkHandle].grantTime = master.leaseGrants[leaseRequest.ChunkHandle].grantTime.Add(30 * time.Second)
+	master.LeaseGrants[leaseRequest.ChunkHandle].grantTime = master.LeaseGrants[leaseRequest.ChunkHandle].grantTime.Add(30 * time.Second)
 	return nil
 }
 
@@ -359,7 +359,7 @@ func (master *Master) createNewChunk(fileName string) error {
 			return err
 		}
 	}
-	master.fileMap[fileName] = append(master.fileMap[fileName], chunk)
+	master.FileMap[fileName] = append(master.FileMap[fileName], chunk)
 	return nil
 }
 
@@ -459,7 +459,7 @@ func (master *Master) readCheckpoint() error {
 		master.mu.Lock()
 		defer master.mu.Unlock()
 		// Clear existing state
-		master.fileMap = make(map[string][]Chunk)
+		master.FileMap = make(map[string][]Chunk)
 
 		offset := 0
 		// Decode each mapping
@@ -484,7 +484,7 @@ func (master *Master) readCheckpoint() error {
 				}
 			}
 			if !isDeletedFile {
-				master.fileMap[file] = chunks
+				master.FileMap[file] = chunks
 			}
 			offset+=bytesRead
 		}
@@ -507,7 +507,7 @@ func (master *Master) buildCheckpoint() error {
 	defer master.mu.Unlock()
 	totalMappings := 0
 	fileChunksEncoded := make([]byte, 0)
-	for file, chunks := range master.fileMap {
+	for file, chunks := range master.FileMap {
 		totalMappings++
 		fileBytes := encodeFileAndChunks(file, chunks)
 		fileChunksEncoded = append(fileChunksEncoded, fileBytes...)

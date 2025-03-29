@@ -2,6 +2,8 @@ package chunkserver
 
 import (
 	"errors"
+	"io/fs"
+	// "io/fs"
 	"log"
 	"os"
 	"strconv"
@@ -75,9 +77,17 @@ func (chunkServer *ChunkServer) loadChunks() error {
 	var chunkHandles []int64
 
 	// Read all entries in the directory
-	entries, err := os.ReadDir(chunkServer.chunkDirectory)
+	entries, err := os.ReadDir(chunkServer.ChunkDirectory)
 	if err != nil {
-		return err
+		log.Println(err)
+		var pathErr *fs.PathError
+        if !errors.As(err, &pathErr) {
+				return err
+		}
+		err=os.Mkdir(chunkServer.ChunkDirectory,0600)
+		if err!=nil{
+			return err
+		}
 	}
 
 	for _, entry := range entries {
@@ -106,7 +116,7 @@ func (chunkServer *ChunkServer) loadChunks() error {
 		}
 	}
 
-	chunkServer.chunkHandles = chunkHandles
+	chunkServer.ChunkHandles = chunkHandles
 	return nil
 
 }

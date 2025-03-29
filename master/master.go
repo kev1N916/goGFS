@@ -14,18 +14,18 @@ import (
 
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
-	inTestMode bool
+	inTestMode             bool
 	listener               net.Listener
-	chunkServerConnections []ChunkServerConnection
+	ChunkServerConnections []*ChunkServerConnection
 	opLogger               *OpLogger
 	LastCheckpointTime     time.Time
 	LastLogSwitchTime      time.Time
-	serverList             *ServerList
+	ServerList             *ServerList
 	idGenerator            *snowflake.Node
-	port                   string
-	leaseGrants            map[int64]*Lease
-	fileMap                map[string][]Chunk // maps file names to array of chunkIds
-	chunkHandler           map[int64][]string // maps chunkIds to the chunkServers which store those chunks
+	Port                   string
+	LeaseGrants            map[int64]*Lease
+	FileMap                map[string][]Chunk // maps file names to array of chunkIds
+	ChunkHandler           map[int64][]string // maps chunkIds to the chunkServers which store those chunks
 	mu                     sync.Mutex
 }
 
@@ -37,8 +37,8 @@ type Chunk struct {
 }
 
 type ChunkServerConnection struct {
-	port string
-	conn net.Conn
+	Port string
+	Conn net.Conn
 }
 
 // The lease struct is used to designate the primary ChunkServer during write Requests
@@ -51,29 +51,30 @@ type Lease struct {
 }
 
 // NewMaster creates and initializes a new Master instance
-func NewMaster(port string) (*Master, error) {
+func NewMaster(port string,inTestMode bool) (*Master, error) {
 	node, err := snowflake.NewNode(1)
-	if err!=nil{
-		return nil,err
+	if err != nil {
+		return nil, err
 	}
 	pq := &ServerList{}
 	heap.Init(pq)
-	master:=&Master{
-		chunkServerConnections: make([]ChunkServerConnection, 0),
+	master := &Master{
+		inTestMode: inTestMode,
+		ChunkServerConnections: make([]*ChunkServerConnection, 0),
 		// currentOpLog: opLogFile,
-		serverList:   pq,
+		ServerList:   pq,
 		idGenerator:  node,
-		port:         port,
-		fileMap:      make(map[string][]Chunk),
-		chunkHandler: make(map[int64][]string),
-		leaseGrants:  make(map[int64]*Lease),
+		Port:         port,
+		FileMap:      make(map[string][]Chunk),
+		ChunkHandler: make(map[int64][]string),
+		LeaseGrants:  make(map[int64]*Lease),
 	}
-	opLogger,err:=NewOpLogger(master)
-	if err!=nil{
-		return nil,err
+	opLogger, err := NewOpLogger(master)
+	if err != nil {
+		return nil, err
 	}
-	master.opLogger=opLogger
-	return master,nil
+	master.opLogger = opLogger
+	return master, nil
 }
 
 // writes the response back to the client for a read request
@@ -105,9 +106,9 @@ func (master *Master) handleMasterReadRequest(conn net.Conn, requestBodyBytes []
 		ChunkHandle:  -1,
 		ChunkServers: make([]string, 0),
 	}
-	chunk, chunkServers, err := master.getMetadataForFile(request.Filename,request.ChunkIndex)
+	chunk, chunkServers, err := master.getMetadataForFile(request.Filename, request.ChunkIndex)
 	if err != nil {
-		readResponse.ErrorMessage=err.Error()
+		readResponse.ErrorMessage = err.Error()
 		err = master.writeMasterReadResponse(conn, readResponse)
 		return err
 	}
@@ -264,7 +265,7 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 	master.mu.Lock()
 	chunksToBeDeleted := make([]int64, 0)
 	for _, chunkId := range heartBeatResponse.ChunksPresent {
-		_, presentOnMaster := master.chunkHandler[chunkId]
+		_, presentOnMaster := master.ChunkHandler[chunkId]
 		if !presentOnMaster {
 			chunksToBeDeleted = append(chunksToBeDeleted, chunkId)
 		}
@@ -303,9 +304,8 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	}
 	master.mu.Lock()
 	for _, chunkId := range handshake.ChunkHandles {
-		master.chunkHandler[chunkId] = append(master.chunkHandler[chunkId], conn.RemoteAddr().String())
+		master.ChunkHandler[chunkId] = append(master.ChunkHandler[chunkId], conn.RemoteAddr().String())
 	}
-	master.mu.Unlock()
 	handshakeResponse := common.MasterChunkServerHandshakeResponse{
 		Message: "Handshake successful",
 	}
@@ -313,54 +313,83 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	if err != nil {
 		return err
 	}
-	chunkServerConnection := ChunkServerConnection{port: conn.RemoteAddr().String(), conn: conn}
-	master.chunkServerConnections = append(master.chunkServerConnections, chunkServerConnection)
 
-	go master.startHeartBeatWithChunkServer(chunkServerConnection)
+	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
+	master.ChunkServerConnections = append(master.ChunkServerConnections,chunkServerConnection)
+	master.mu.Unlock()
+
+	if (!master.inTestMode){
+	go master.startChunkServerHeartbeat(chunkServerConnection)
+	}
 	return nil
 }
 
-func (master *Master) startHeartBeatWithChunkServer(chunkServerConnection ChunkServerConnection) {
+func (master *Master) startChunkServerHeartbeat(chunkServerConnection *ChunkServerConnection){
+
+	ticker:=time.NewTicker(45*time.Second)
+	for{
+		select{
+		case <-ticker.C:
+			err:=master.SendHeartBeatToChunkServer(chunkServerConnection)
+			log.Println(err)
+			ticker.Reset(45*time.Second)
+		default:
+		}
+	}
+}
+
+func (master *Master) SendHeartBeatToChunkServer(chunkServerConnection *ChunkServerConnection) error{
 	heartBeatRequest := common.MasterToChunkServerHeartbeatRequest{
 		Heartbeat: "HEARTBEAT",
 	}
 
 	heartbeatRequestBytes, err := helper.EncodeMessage(common.MasterToChunkServerHeartbeatRequestType, heartBeatRequest)
 	if err != nil {
-		return
+		return err
 	}
 
-	_, err = chunkServerConnection.conn.Write(heartbeatRequestBytes)
+	_, err = chunkServerConnection.Conn.Write(heartbeatRequestBytes)
 	if err != nil {
-		return
+		return err
 	}
+	return nil
 }
 
 func (master *Master) Start() error {
 	err := master.recover()
 	if err != nil {
-		log.Panicf("master failed to recover correctly")
+		return err
+		// log.Panicf("master failed to recover correctly")
 	}
 	// Start master server
-	listener, err := net.Listen("tcp", ":"+master.port)
+	listener, err := net.Listen("tcp", ":"+master.Port)
 	if err != nil {
-		log.Fatalf("Failed to start master server: %v", err)
+		return err
+		// log.Fatalf("Failed to start master server: %v", err)
 	}
 	master.listener = listener
-	defer listener.Close()
+	
 
 	go master.startBackgroundCheckpoint()
 	log.Println("Master server listening on :8080")
-
+	startWG := sync.WaitGroup{}
+	startWG.Add(1)
 	// Main loop to accept connections from clients
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
-			continue
+	go func() {
+		startWG.Done()
+		defer master.listener.Close()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("Failed to accept connection: %v", err)
+				continue
+			}
+			go master.handleConnection(conn)
 		}
-		go master.handleConnection(conn)
-	}
+	}()
+	startWG.Wait()
+	log.Println("connection accepting loop for master started succesfully")
+	return nil
 }
 
 // func (master *Master) writeCreateNewChunkResponse(conn net.Conn,messageBytes []byte)error{

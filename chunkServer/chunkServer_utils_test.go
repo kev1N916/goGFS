@@ -31,7 +31,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Initialize a ChunkServer with the test directory
 		server := &ChunkServer{
-			chunkDirectory: tmpDir,
+			ChunkDirectory: tmpDir,
 		}
 
 		// Call the function being tested
@@ -41,11 +41,11 @@ func TestLoadChunks(t *testing.T) {
 		}
 
 		// Sort the chunks for comparison (since directory reads might be in any order)
-		slices.Sort(server.chunkHandles)
+		slices.Sort(server.ChunkHandles)
 
 		// Check that all the expected chunks were loaded
-		if !reflect.DeepEqual(server.chunkHandles, expectedChunks) {
-			t.Errorf("Expected chunks %v, got %v", expectedChunks, server.chunkHandles)
+		if !reflect.DeepEqual(server.ChunkHandles, expectedChunks) {
+			t.Errorf("Expected chunks %v, got %v", expectedChunks, server.ChunkHandles)
 		}
 	})
 
@@ -72,7 +72,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Initialize a ChunkServer with the test directory
 		server := &ChunkServer{
-			chunkDirectory: tmpDir,
+			ChunkDirectory: tmpDir,
 		}
 
 		// Call the function being tested
@@ -83,8 +83,8 @@ func TestLoadChunks(t *testing.T) {
 
 		// Check that only the valid chunk was loaded (directory was skipped)
 		expected := []int64{validChunk}
-		if !reflect.DeepEqual(server.chunkHandles, expected) {
-			t.Errorf("Expected chunks %v, got %v", expected, server.chunkHandles)
+		if !reflect.DeepEqual(server.ChunkHandles, expected) {
+			t.Errorf("Expected chunks %v, got %v", expected, server.ChunkHandles)
 		}
 	})
 
@@ -111,7 +111,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Initialize a ChunkServer with the test directory
 		server := &ChunkServer{
-			chunkDirectory: tmpDir,
+			ChunkDirectory: tmpDir,
 		}
 
 		// Call the function being tested
@@ -122,8 +122,8 @@ func TestLoadChunks(t *testing.T) {
 
 		// Check that only the valid chunk was loaded (non-chunk file was skipped)
 		expected := []int64{validChunk}
-		if !reflect.DeepEqual(server.chunkHandles, expected) {
-			t.Errorf("Expected chunks %v, got %v", expected, server.chunkHandles)
+		if !reflect.DeepEqual(server.ChunkHandles, expected) {
+			t.Errorf("Expected chunks %v, got %v", expected, server.ChunkHandles)
 		}
 	})
 
@@ -150,7 +150,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Initialize a ChunkServer with the test directory
 		server := &ChunkServer{
-			chunkDirectory: tmpDir,
+			ChunkDirectory: tmpDir,
 		}
 
 		// Call the function being tested
@@ -161,8 +161,8 @@ func TestLoadChunks(t *testing.T) {
 
 		// Check that only the valid chunk was loaded (invalid chunk filename was skipped)
 		expected := []int64{validChunk}
-		if !reflect.DeepEqual(server.chunkHandles, expected) {
-			t.Errorf("Expected chunks %v, got %v", expected, server.chunkHandles)
+		if !reflect.DeepEqual(server.ChunkHandles, expected) {
+			t.Errorf("Expected chunks %v, got %v", expected, server.ChunkHandles)
 		}
 	})
 
@@ -172,7 +172,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Initialize a ChunkServer with the non-existent directory
 		server := &ChunkServer{
-			chunkDirectory: nonExistentDir,
+			ChunkDirectory: nonExistentDir,
 		}
 
 		// Call the function being tested
@@ -194,7 +194,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Initialize a ChunkServer with the empty directory
 		server := &ChunkServer{
-			chunkDirectory: tmpDir,
+			ChunkDirectory: tmpDir,
 		}
 
 		// Call the function being tested
@@ -204,8 +204,8 @@ func TestLoadChunks(t *testing.T) {
 		}
 
 		// Check that the chunk handles slice is empty
-		if len(server.chunkHandles) != 0 {
-			t.Errorf("Expected empty chunk handles slice, got %v", server.chunkHandles)
+		if len(server.ChunkHandles) != 0 {
+			t.Errorf("Expected empty chunk handles slice, got %v", server.ChunkHandles)
 		}
 	})
 }
