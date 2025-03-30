@@ -346,24 +346,24 @@ func TestClientReadWorkflow(t *testing.T) {
 // TestClientWriteToMaster tests the client's ability to write to master
 // when the file does not exist on master server and no chunk servers are availible
 func TestClientWriteToMaster_1(t *testing.T) {
-	testFileName:="testFile"
+	testFileName := "testFile"
 	masterPort := "8000"
 	masterServer, err := master.NewMaster(masterPort, true)
-	assert.NotNil(t,masterServer)
-	assert.Nil(t,err)
-	err=masterServer.Start()
-	assert.Nil(t,err)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
+	err = masterServer.Start()
+	assert.Nil(t, err)
 
-	client:=client.NewClient(masterPort)
-	assert.NotNil(t,client)
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
 
-	request:=common.ClientMasterWriteRequest{
+	request := common.ClientMasterWriteRequest{
 		Filename: testFileName,
 	}
-	response,err:=client.WriteToMasterServer(request)
-	assert.NotNil(t,err)
-	assert.Nil(t,response)
-	assert.Equal(t,"no chunk servers available",err.Error())
+	response, err := client.WriteToMasterServer(request)
+	assert.NotNil(t, err)
+	assert.Nil(t, response)
+	assert.Equal(t, "no chunk servers available", err.Error())
 
 }
 
@@ -374,17 +374,17 @@ func TestClientWriteToMaster_2(t *testing.T) {
 	defer os.RemoveAll("chunkServer2")
 	defer os.RemoveAll("chunkServer3")
 	defer os.Remove("OPLOG.opLog")
-	testFileName:="testFile"
+	testFileName := "testFile"
 	masterPort := "8000"
 	masterServer, err := master.NewMaster(masterPort, false)
-	assert.NotNil(t,masterServer)
-	assert.Nil(t,err)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
 
-	err=masterServer.Start()
-	assert.Nil(t,err)
+	err = masterServer.Start()
+	assert.Nil(t, err)
 
-	client:=client.NewClient(masterPort)
-	assert.NotNil(t,client)
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
 
 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
 	chunkServer1port, err := chunkServer1.Start()
@@ -395,53 +395,51 @@ func TestClientWriteToMaster_2(t *testing.T) {
 	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
-	log.Println(chunkServer1port,chunkServer2port,chunkServer3port)
-	request:=common.ClientMasterWriteRequest{
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteRequest{
 		Filename: testFileName,
 	}
-	response,err:=client.WriteToMasterServer(request)
-	assert.Nil(t,err)
-	assert.NotNil(t,response)
-	assert.NotEmpty(t,len(response.SecondaryChunkServers))
-	assert.NotEmpty(t,response.PrimaryChunkServer)
-	assert.Empty(t,response.ErrorMessage)
-	assert.NotEqual(t,-1,response.ChunkHandle)
+	response, err := client.WriteToMasterServer(request)
+	assert.Nil(t, err)
+	assert.NotNil(t, response)
+	assert.NotEmpty(t, len(response.SecondaryChunkServers))
+	assert.NotEmpty(t, response.PrimaryChunkServer)
+	assert.Empty(t, response.ErrorMessage)
+	assert.NotEqual(t, -1, response.ChunkHandle)
 
-	if(response.PrimaryChunkServer==chunkServer1port){
-		assert.NotEmpty(t,chunkServer1.LeaseGrants)
-	}else if(response.PrimaryChunkServer==chunkServer2port){
-		assert.NotEmpty(t,chunkServer2.LeaseGrants)
+	if response.PrimaryChunkServer == chunkServer1port {
+		assert.NotEmpty(t, chunkServer1.LeaseGrants)
+	} else if response.PrimaryChunkServer == chunkServer2port {
+		assert.NotEmpty(t, chunkServer2.LeaseGrants)
 
-	}else if(response.PrimaryChunkServer==chunkServer3port){
-		assert.NotEmpty(t,chunkServer3.LeaseGrants)
-	}else{
+	} else if response.PrimaryChunkServer == chunkServer3port {
+		assert.NotEmpty(t, chunkServer3.LeaseGrants)
+	} else {
 		t.Error("server returned is not appropriate")
 	}
 
-	err=masterServer.Shutdown()
-	assert.Nil(t,err)
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
 }
-
 
 // TestClientWriteToMaster_3 tests the client's ability to write to master 2 times consecutively
 // when the file already exists on master server and chunk servers are available
-// 
 func TestClientWriteToMaster_3(t *testing.T) {
 	defer os.RemoveAll("chunkServer1")
 	defer os.RemoveAll("chunkServer2")
 	defer os.RemoveAll("chunkServer3")
 	defer os.Remove("OPLOG.opLog")
-	testFileName:="testFile"
+	testFileName := "testFile"
 	masterPort := "8000"
 	masterServer, err := master.NewMaster(masterPort, false)
-	assert.NotNil(t,masterServer)
-	assert.Nil(t,err)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
 
-	err=masterServer.Start()
-	assert.Nil(t,err)
+	err = masterServer.Start()
+	assert.Nil(t, err)
 
-	client:=client.NewClient(masterPort)
-	assert.NotNil(t,client)
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
 
 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
 	chunkServer1port, err := chunkServer1.Start()
@@ -452,52 +450,52 @@ func TestClientWriteToMaster_3(t *testing.T) {
 	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
-	log.Println(chunkServer1port,chunkServer2port,chunkServer3port)
-	request:=common.ClientMasterWriteRequest{
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteRequest{
 		Filename: testFileName,
 	}
 
-	response1,err:=client.WriteToMasterServer(request)
-	time.Sleep(1*time.Second)
-	assert.Nil(t,err)
-	assert.NotNil(t,response1)
-	assert.NotEmpty(t,len(response1.SecondaryChunkServers))
-	assert.NotEmpty(t,response1.PrimaryChunkServer)
-	assert.Empty(t,response1.ErrorMessage)
-	assert.NotEqual(t,-1,response1.ChunkHandle)
+	response1, err := client.WriteToMasterServer(request)
+	time.Sleep(1 * time.Second)
+	assert.Nil(t, err)
+	assert.NotNil(t, response1)
+	assert.NotEmpty(t, len(response1.SecondaryChunkServers))
+	assert.NotEmpty(t, response1.PrimaryChunkServer)
+	assert.Empty(t, response1.ErrorMessage)
+	assert.NotEqual(t, -1, response1.ChunkHandle)
 
-	if(response1.PrimaryChunkServer==chunkServer1port){
-		assert.NotEmpty(t,len(chunkServer1.LeaseGrants))
-		_,present:=chunkServer1.LeaseGrants[response1.ChunkHandle]
-		assert.True(t,present)
-	}else if(response1.PrimaryChunkServer==chunkServer2port){
-		assert.NotEmpty(t,len(chunkServer2.LeaseGrants))
-		_,present:=chunkServer2.LeaseGrants[response1.ChunkHandle]
-		assert.True(t,present)
-	}else if(response1.PrimaryChunkServer==chunkServer3port){
-		assert.NotEmpty(t,len(chunkServer3.LeaseGrants))
-		_,present:=chunkServer3.LeaseGrants[response1.ChunkHandle]
-		assert.True(t,present)
-	}else{
+	if response1.PrimaryChunkServer == chunkServer1port {
+		assert.NotEmpty(t, len(chunkServer1.LeaseGrants))
+		_, present := chunkServer1.LeaseGrants[response1.ChunkHandle]
+		assert.True(t, present)
+	} else if response1.PrimaryChunkServer == chunkServer2port {
+		assert.NotEmpty(t, len(chunkServer2.LeaseGrants))
+		_, present := chunkServer2.LeaseGrants[response1.ChunkHandle]
+		assert.True(t, present)
+	} else if response1.PrimaryChunkServer == chunkServer3port {
+		assert.NotEmpty(t, len(chunkServer3.LeaseGrants))
+		_, present := chunkServer3.LeaseGrants[response1.ChunkHandle]
+		assert.True(t, present)
+	} else {
 		t.Error("server returned is not appropriate")
 	}
 
-	response2,err:=client.WriteToMasterServer(request)
-	time.Sleep(1*time.Second)
+	response2, err := client.WriteToMasterServer(request)
+	time.Sleep(1 * time.Second)
 
-	assert.Nil(t,err)
-	assert.NotNil(t,response2)
-	assert.NotEmpty(t,len(response2.SecondaryChunkServers))
-	assert.NotEmpty(t,response2.PrimaryChunkServer)
-	assert.Empty(t,response2.ErrorMessage)
-	assert.NotEqual(t,-1,response2.ChunkHandle)
+	assert.Nil(t, err)
+	assert.NotNil(t, response2)
+	assert.NotEmpty(t, len(response2.SecondaryChunkServers))
+	assert.NotEmpty(t, response2.PrimaryChunkServer)
+	assert.Empty(t, response2.ErrorMessage)
+	assert.NotEqual(t, -1, response2.ChunkHandle)
 
-	assert.Equal(t,response2.ChunkHandle,response1.ChunkHandle)
-	assert.NotEqual(t,response2.MutationId,response1.MutationId)
-	assert.Equal(t,response1.PrimaryChunkServer,response2.PrimaryChunkServer)
+	assert.Equal(t, response2.ChunkHandle, response1.ChunkHandle)
+	assert.NotEqual(t, response2.MutationId, response1.MutationId)
+	assert.Equal(t, response1.PrimaryChunkServer, response2.PrimaryChunkServer)
 
-	err=masterServer.Shutdown()
-	assert.Nil(t,err)
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
 }
 
 // TestClientWriteToMaster_4 tests the client's ability to write to master 2 times consecutively
@@ -508,17 +506,17 @@ func TestClientWriteToMaster_4(t *testing.T) {
 	defer os.RemoveAll("chunkServer2")
 	defer os.RemoveAll("chunkServer3")
 	defer os.Remove("OPLOG.opLog")
-	testFileName:="testFile"
+	testFileName := "testFile"
 	masterPort := "8000"
 	masterServer, err := master.NewMaster(masterPort, false)
-	assert.NotNil(t,masterServer)
-	assert.Nil(t,err)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
 
-	err=masterServer.Start()
-	assert.Nil(t,err)
+	err = masterServer.Start()
+	assert.Nil(t, err)
 
-	client:=client.NewClient(masterPort)
-	assert.NotNil(t,client)
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
 
 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
 	chunkServer1port, err := chunkServer1.Start()
@@ -530,71 +528,289 @@ func TestClientWriteToMaster_4(t *testing.T) {
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
-	assert.Equal(t,3,masterServer.ServerList.Len())
-	log.Println(chunkServer1port,chunkServer2port,chunkServer3port)
-	request:=common.ClientMasterWriteRequest{
+	assert.Equal(t, 3, masterServer.ServerList.Len())
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteRequest{
 		Filename: testFileName,
 	}
 
-	response1,err:=client.WriteToMasterServer(request)
-	time.Sleep(1*time.Second)
-	assert.Nil(t,err)
-	assert.NotNil(t,response1)
-	assert.NotEmpty(t,len(response1.SecondaryChunkServers))
-	assert.NotEmpty(t,response1.PrimaryChunkServer)
-	assert.Empty(t,response1.ErrorMessage)
-	assert.NotEqual(t,-1,response1.ChunkHandle)
+	response1, err := client.WriteToMasterServer(request)
+	time.Sleep(1 * time.Second)
+	assert.Nil(t, err)
+	assert.NotNil(t, response1)
+	assert.NotEmpty(t, len(response1.SecondaryChunkServers))
+	assert.NotEmpty(t, response1.PrimaryChunkServer)
+	assert.Empty(t, response1.ErrorMessage)
+	assert.NotEqual(t, -1, response1.ChunkHandle)
 
-	if(response1.PrimaryChunkServer==chunkServer1port){
-		assert.NotEmpty(t,len(chunkServer1.LeaseGrants))
-		_,present:=chunkServer1.LeaseGrants[response1.ChunkHandle]
-		assert.True(t,present)
-	}else if(response1.PrimaryChunkServer==chunkServer2port){
-		assert.NotEmpty(t,len(chunkServer2.LeaseGrants))
-		_,present:=chunkServer2.LeaseGrants[response1.ChunkHandle]
-		assert.True(t,present)
-	}else if(response1.PrimaryChunkServer==chunkServer3port){
-		assert.NotEmpty(t,len(chunkServer3.LeaseGrants))
-		_,present:=chunkServer3.LeaseGrants[response1.ChunkHandle]
-		assert.True(t,present)
-	}else{
+	if response1.PrimaryChunkServer == chunkServer1port {
+		assert.NotEmpty(t, len(chunkServer1.LeaseGrants))
+		_, present := chunkServer1.LeaseGrants[response1.ChunkHandle]
+		assert.True(t, present)
+	} else if response1.PrimaryChunkServer == chunkServer2port {
+		assert.NotEmpty(t, len(chunkServer2.LeaseGrants))
+		_, present := chunkServer2.LeaseGrants[response1.ChunkHandle]
+		assert.True(t, present)
+	} else if response1.PrimaryChunkServer == chunkServer3port {
+		assert.NotEmpty(t, len(chunkServer3.LeaseGrants))
+		_, present := chunkServer3.LeaseGrants[response1.ChunkHandle]
+		assert.True(t, present)
+	} else {
 		t.Error("server returned is not appropriate")
 	}
 
-	newGrantTime:=masterServer.LeaseGrants[response1.ChunkHandle].GrantTime.Add(-65*time.Second)
-	masterServer.LeaseGrants[response1.ChunkHandle].GrantTime=newGrantTime
+	newGrantTime := masterServer.LeaseGrants[response1.ChunkHandle].GrantTime.Add(-65 * time.Second)
+	masterServer.LeaseGrants[response1.ChunkHandle].GrantTime = newGrantTime
 
-	response2,err:=client.WriteToMasterServer(request)
-	time.Sleep(1*time.Second)
+	response2, err := client.WriteToMasterServer(request)
+	time.Sleep(1 * time.Second)
 
-	assert.Nil(t,err)
-	assert.NotNil(t,response2)
-	assert.NotEmpty(t,len(response2.SecondaryChunkServers))
-	assert.NotEmpty(t,response2.PrimaryChunkServer)
-	assert.Empty(t,response2.ErrorMessage)
-	assert.NotEqual(t,-1,response2.ChunkHandle)
+	assert.Nil(t, err)
+	assert.NotNil(t, response2)
+	assert.NotEmpty(t, len(response2.SecondaryChunkServers))
+	assert.NotEmpty(t, response2.PrimaryChunkServer)
+	assert.Empty(t, response2.ErrorMessage)
+	assert.NotEqual(t, -1, response2.ChunkHandle)
 
-	assert.Equal(t,response2.ChunkHandle,response1.ChunkHandle)
-	assert.NotEqual(t,response2.MutationId,response1.MutationId)
+	assert.Equal(t, response2.ChunkHandle, response1.ChunkHandle)
+	assert.NotEqual(t, response2.MutationId, response1.MutationId)
 
-	if(response2.PrimaryChunkServer==chunkServer1port){
-		assert.NotEmpty(t,len(chunkServer1.LeaseGrants))
-		_,present:=chunkServer1.LeaseGrants[response2.ChunkHandle]
-		assert.True(t,present)
-	}else if(response2.PrimaryChunkServer==chunkServer2port){
-		assert.NotEmpty(t,len(chunkServer2.LeaseGrants))
-		_,present:=chunkServer2.LeaseGrants[response2.ChunkHandle]
-		assert.True(t,present)
-	}else if(response2.PrimaryChunkServer==chunkServer3port){
-		assert.NotEmpty(t,len(chunkServer3.LeaseGrants))
-		_,present:=chunkServer3.LeaseGrants[response2.ChunkHandle]
-		assert.True(t,present)
-	}else{
+	if response2.PrimaryChunkServer == chunkServer1port {
+		assert.NotEmpty(t, len(chunkServer1.LeaseGrants))
+		_, present := chunkServer1.LeaseGrants[response2.ChunkHandle]
+		assert.True(t, present)
+	} else if response2.PrimaryChunkServer == chunkServer2port {
+		assert.NotEmpty(t, len(chunkServer2.LeaseGrants))
+		_, present := chunkServer2.LeaseGrants[response2.ChunkHandle]
+		assert.True(t, present)
+	} else if response2.PrimaryChunkServer == chunkServer3port {
+		assert.NotEmpty(t, len(chunkServer3.LeaseGrants))
+		_, present := chunkServer3.LeaseGrants[response2.ChunkHandle]
+		assert.True(t, present)
+	} else {
 		t.Error("server returned is not appropriate")
 	}
 
-	err=masterServer.Shutdown()
-	assert.Nil(t,err)
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
 }
+
+/*
+1. failing at primary
+2. passing at primary but failing in one of the secondary
+3. passing at all9
+*/
+func TestReplicateChunkToAllServers_1(t *testing.T) {
+	testData := []byte{'t', 'e', 's', 't'}
+	defer os.RemoveAll("chunkServer1")
+	defer os.RemoveAll("chunkServer2")
+	defer os.RemoveAll("chunkServer3")
+	defer os.Remove("OPLOG.opLog")
+	// testFileName:="testFile"
+	masterPort := "8000"
+	masterServer, err := master.NewMaster(masterPort, false)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
+
+	err = masterServer.Start()
+	assert.Nil(t, err)
+
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
+
+	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1port, err := chunkServer1.Start()
+	assert.Nil(t, err)
+	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2port, err := chunkServer2.Start()
+	assert.Nil(t, err)
+	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3port, err := chunkServer3.Start()
+	assert.Nil(t, err)
+
+	assert.Equal(t, 3, masterServer.ServerList.Len())
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteResponse{
+		MutationId:            243,
+		ChunkHandle:           978,
+		PrimaryChunkServer:    "csasaaca",
+		SecondaryChunkServers: []string{chunkServer1port, chunkServer2port},
+		ErrorMessage:          "",
+	}
+
+	err = client.ReplicateChunkToAllServers(&request, testData)
+	assert.NotNil(t, err)
+	assert.Equal(t, "writing to primary chunk server failed", err.Error())
+
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
+}
+
+func TestReplicateChunkToAllServers_2(t *testing.T) {
+	testData := []byte{'t', 'e', 's', 't'}
+	defer os.RemoveAll("chunkServer1")
+	defer os.RemoveAll("chunkServer2")
+	defer os.RemoveAll("chunkServer3")
+	defer os.Remove("OPLOG.opLog")
+	// testFileName:="testFile"
+	masterPort := "8000"
+	masterServer, err := master.NewMaster(masterPort, false)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
+
+	err = masterServer.Start()
+	assert.Nil(t, err)
+
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
+
+	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1port, err := chunkServer1.Start()
+	assert.Nil(t, err)
+	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2port, err := chunkServer2.Start()
+	assert.Nil(t, err)
+	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3port, err := chunkServer3.Start()
+	assert.Nil(t, err)
+
+	assert.Equal(t, 3, masterServer.ServerList.Len())
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteResponse{
+		MutationId:            243,
+		ChunkHandle:           978,
+		PrimaryChunkServer:    chunkServer1port,
+		SecondaryChunkServers: []string{"testServer", chunkServer2port},
+		ErrorMessage:          "",
+	}
+
+	err = client.ReplicateChunkToAllServers(&request, testData)
+	assert.NotNil(t, err)
+	assert.Equal(t, "writing to secondary chunk server failed", err.Error())
+
+	dataTransferred, presentOnPrimaryServer := chunkServer1.LruCache.Get(request.MutationId)
+	assert.Equal(t, true, presentOnPrimaryServer)
+	assert.Equal(t, testData, dataTransferred)
+
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
+}
+
+func TestReplicateChunkToAllServers_3(t *testing.T) {
+	testData := []byte{'t', 'e', 's', 't'}
+	defer os.RemoveAll("chunkServer1")
+	defer os.RemoveAll("chunkServer2")
+	defer os.RemoveAll("chunkServer3")
+	defer os.Remove("OPLOG.opLog")
+	// testFileName:="testFile"
+	masterPort := "8000"
+	masterServer, err := master.NewMaster(masterPort, false)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
+
+	err = masterServer.Start()
+	assert.Nil(t, err)
+
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
+
+	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1port, err := chunkServer1.Start()
+	assert.Nil(t, err)
+	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2port, err := chunkServer2.Start()
+	assert.Nil(t, err)
+	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3port, err := chunkServer3.Start()
+	assert.Nil(t, err)
+
+	assert.Equal(t, 3, masterServer.ServerList.Len())
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteResponse{
+		MutationId:            243,
+		ChunkHandle:           978,
+		PrimaryChunkServer:    chunkServer1port,
+		SecondaryChunkServers: []string{chunkServer3port, chunkServer2port},
+		ErrorMessage:          "",
+	}
+
+	err = client.ReplicateChunkToAllServers(&request, testData)
+	assert.Nil(t, err)
+
+	for _,server := range []*chunkserver.ChunkServer{chunkServer1, chunkServer2, chunkServer3} {
+		dataTransferred, presentOnServer := server.LruCache.Get(request.MutationId)
+		assert.Equal(t, true, presentOnServer)
+		assert.Equal(t, testData, dataTransferred)
+
+	}
+
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
+}
+
+
+// send the request when the primaryServer does not have a valid lease
+// if the lease does not exist the connection should time out and an error will be 
+// returned
+func TestSendWriteRequestToPrimary_1(t *testing.T) {
+	testData := []byte{'t', 'e', 's', 't'}
+	defer os.RemoveAll("chunkServer1")
+	defer os.RemoveAll("chunkServer2")
+	defer os.RemoveAll("chunkServer3")
+	defer os.Remove("OPLOG.opLog")
+	// testFileName:="testFile"
+	masterPort := "8000"
+	masterServer, err := master.NewMaster(masterPort, false)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
+
+	err = masterServer.Start()
+	assert.Nil(t, err)
+
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
+
+	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1port, err := chunkServer1.Start()
+	assert.Nil(t, err)
+	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2port, err := chunkServer2.Start()
+	assert.Nil(t, err)
+	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3port, err := chunkServer3.Start()
+	assert.Nil(t, err)
+
+	assert.Equal(t, 3, masterServer.ServerList.Len())
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteResponse{
+		MutationId:            243,
+		ChunkHandle:           978,
+		PrimaryChunkServer:    chunkServer1port,
+		SecondaryChunkServers: []string{chunkServer3port, chunkServer2port},
+		ErrorMessage:          "",
+	}
+
+	err = client.ReplicateChunkToAllServers(&request, testData)
+	assert.Nil(t, err)
+
+	for _,server := range []*chunkserver.ChunkServer{chunkServer1, chunkServer2, chunkServer3} {
+		dataTransferred, presentOnServer := server.LruCache.Get(request.MutationId)
+		assert.Equal(t, true, presentOnServer)
+		assert.Equal(t, testData, dataTransferred)
+	}
+
+	commitRequest:=common.PrimaryChunkCommitRequest{
+		ChunkHandle: request.ChunkHandle,
+		MutationId: request.MutationId,
+		SecondaryServers: request.SecondaryChunkServers,
+	}
+
+	err=client.SendWriteRequestToPrimary(chunkServer1port,commitRequest)
+	assert.NotNil(t,err)
+
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
+}
+
 
 

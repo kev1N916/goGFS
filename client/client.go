@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -273,7 +272,7 @@ func (client *Client) WriteToMasterServer(request common.ClientMasterWriteReques
 // It consists of a retry mechanism with exponential backoff along with Jitter.
 // We will try multiple times to push the data to the server and only if all of our attempts
 // fail will we stop and return an error.
-func (client *Client) WriteChunkToChunkServer(chunkServerPort string, request common.ClientChunkServerWriteRequest, data []byte) error {
+func (client *Client) WriteChunkToChunkServer(chunkServerPort string, request common.ClientChunkServerWriteRequest) error {
 	maxRetries := 5                          // setting the maxAttempts
 	initialBackoff := 100 * time.Millisecond // setting the initial backoff
 	maxBackoff := 5 * time.Second            // setting the max backoff period
@@ -298,17 +297,19 @@ func (client *Client) WriteChunkToChunkServer(chunkServerPort string, request co
 			if err != nil {
 				return err
 			}
-			dataSize := make([]byte, 4)
-			binary.LittleEndian.AppendUint32(dataSize, uint32(len(data)))
-			_, err = conn.Write(dataSize)
-			if err != nil {
-				return err
-			}
-			// Send the actual data
-			_, err = io.Copy(conn, bytes.NewReader(data))
-			if err != nil {
-				return fmt.Errorf("failed to send data: %w", err)
-			}
+			// log.Println("size of data to be sent is ",len(data))
+			// dataSize := make([]byte, 4)
+			// dataSize=binary.LittleEndian.AppendUint32(dataSize, uint32(len(data)))
+			// log.Println("size of data sent ",dataSize)
+			// _, err = conn.Write(dataSize)
+			// if err != nil {
+			// 	return err
+			// }
+			// // Send the actual data
+			// _, err = io.Copy(conn, bytes.NewReader(data))
+			// if err != nil {
+			// 	return fmt.Errorf("failed to send data: %w", err)
+			// }
 
 			// read the response from the ChunkServer
 			messageType, messageBytes, err := helper.ReadMessage(conn)
@@ -368,7 +369,7 @@ func (client *Client) WriteChunkToChunkServer(chunkServerPort string, request co
 // Client->ChunkServer Operation
 // Final request in the entire write lifecycle which is sent to the primary ChunkServer.
 // This request is responsible for the mutation which is applied to the chunk
-func (client *Client) sendWriteRequestToPrimary(port string, writeRequestToPrimary common.PrimaryChunkCommitRequest) error {
+func (client *Client) SendWriteRequestToPrimary(port string, writeRequestToPrimary common.PrimaryChunkCommitRequest) error {
 	conn, err := net.Dial("tcp", port)
 	if err != nil {
 		return err
@@ -453,7 +454,7 @@ func (client *Client) Write(filename string, data []byte) error {
 	}
 
 	// push the data to be written to all the chunkServers which the master has returned to us
-	err = client.replicateChunkToAllServers(writeResponse, data)
+	err = client.ReplicateChunkToAllServers(writeResponse, data)
 	if err != nil {
 		return err
 	}
@@ -469,7 +470,7 @@ func (client *Client) Write(filename string, data []byte) error {
 	}
 
 	// send the write request to the primary
-	err = client.sendWriteRequestToPrimary(writeResponse.PrimaryChunkServer, writeRequestToPrimary)
+	err = client.SendWriteRequestToPrimary(writeResponse.PrimaryChunkServer, writeRequestToPrimary)
 	if err != nil {
 		// there are two type of errors that can be returned
 		// one is a specific error which is occurs only if the chunk which the client is trying to
@@ -477,7 +478,6 @@ func (client *Client) Write(filename string, data []byte) error {
 		// in such a case we will try to create a new chunk by sending a request to the master
 		// and then retry the entire write operation from the beginning
 		if err == common.ErrChunkFull {
-
 			// creates a new chunk for the file
 			err = client.createNewChunkForFile(filename)
 			if err != nil {
@@ -498,23 +498,27 @@ func (client *Client) Write(filename string, data []byte) error {
 // We push the data we want to write to the chunk to all the chunkServers
 // first we push it to the primary, if the write to the primary fails we stop our operation there itself,
 // if it doesnt fail then we continue to push the data to all the secondary servers.
-func (client *Client) replicateChunkToAllServers(writeResponse *common.ClientMasterWriteResponse, data []byte) error {
+func (client *Client) ReplicateChunkToAllServers(writeResponse *common.ClientMasterWriteResponse, data []byte) error {
 
 	// the initial request contains the metadata associated with the mutation, namely the mutationId and the chunkHandle
 	// upon receiving this request the chunkServer will prepare itself to read the data .
 	request := common.ClientChunkServerWriteRequest{
 		ChunkHandle: writeResponse.ChunkHandle,
 		MutationId:  writeResponse.MutationId,
-	}
-	err := client.WriteChunkToChunkServer(writeResponse.PrimaryChunkServer, request, data)
-	if err != nil {
-		return err
+		ChunkData: data,
 	}
 
+	// write chunk to primary server
+	err := client.WriteChunkToChunkServer(writeResponse.PrimaryChunkServer, request)
+	if err != nil {
+		return errors.New("writing to primary chunk server failed")
+	}
+
+	// write chunk to secondary chunk servers
 	for i := range writeResponse.SecondaryChunkServers {
-		err = client.WriteChunkToChunkServer(writeResponse.SecondaryChunkServers[i], request, data)
+		err = client.WriteChunkToChunkServer(writeResponse.SecondaryChunkServers[i], request)
 		if err != nil {
-			return err
+			return  errors.New("writing to secondary chunk server failed")
 		}
 	}
 

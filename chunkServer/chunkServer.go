@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,13 +30,14 @@ type CommitResponse struct {
 	commitResponse *common.PrimaryChunkCommitResponse
 }
 type ChunkServer struct {
+	shutDownChan chan struct{}
 	InTestMode                 bool
 	HeartbeatRequestsReceived  atomic.Int32
 	HeartbeatResponsesReceived atomic.Int32
 	listener                   net.Listener
 	ChunkDirectory             string
 	commitRequestChannel       chan CommitRequest
-	lruCache                   *lrucache.LRUBufferCache
+	LruCache                   *lrucache.LRUBufferCache
 	mu                         sync.Mutex
 	MasterPort                 string
 	MasterConnection           net.Conn
@@ -59,13 +61,14 @@ type InterChunkServerResponseHandler struct {
 func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 
 	chunkServer := &ChunkServer{
+		shutDownChan: make(chan struct{},1),
 		MasterPort:           masterPort,
 		ChunkHandles:         make([]int64, 0),
 		LeaseGrants:          make(map[int64]*LeaseGrant),
 		mu:                   sync.Mutex{},
 		ChunkDirectory:       chunkDirectory,
 		commitRequestChannel: make(chan CommitRequest),
-		lruCache:             lrucache.NewLRUBufferCache(100),
+		LruCache:             lrucache.NewLRUBufferCache(100),
 	}
 
 	return chunkServer
@@ -321,14 +324,14 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	}
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	fileName:=strconv.FormatInt(chunkHandle,10)
+	fileName := strconv.FormatInt(chunkHandle, 10)
 	log.Println(fileName)
-	filepath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
+	filepath := filepath.Join(chunkServer.ChunkDirectory, fileName)
 	log.Println(filepath)
 	// os.Open(filepath)
-	chunk,err:=os.OpenFile(filepath+".chunk",os.O_CREATE|os.O_RDWR,0600)
-	if err!=nil{
-		return 
+	chunk, err := os.OpenFile(filepath+".chunk", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return
 	}
 	defer chunk.Close()
 	chunkInfo, err := chunk.Stat()
@@ -472,14 +475,14 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 	chunkPresent = 1
 
 	// if we have an error during the opening of the file we return an error
-	fileName:=strconv.FormatInt(request.ChunkHandle,10)
+	fileName := strconv.FormatInt(request.ChunkHandle, 10)
 	log.Println(fileName)
-	filepath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
+	filepath := filepath.Join(chunkServer.ChunkDirectory, fileName)
 	log.Println(filepath)
 	// os.Open(filepath)
-	chunk,err:=os.OpenFile(filepath+".chunk",os.O_CREATE|os.O_RDWR,0600)
+	chunk, err := os.OpenFile(filepath+".chunk", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		log.Println("ERROR ",err)
+		log.Println("ERROR ", err)
 		chunkPresent = 0
 		_, err = conn.Write([]byte{chunkPresent})
 		if err != nil {
@@ -556,29 +559,29 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 		return err
 	}
 
-	// Read file size
-	sizeBuf := make([]byte, 4)
-	_, err = io.ReadFull(conn, sizeBuf)
-	if err != nil {
-		return err
-	}
+	// // Read file size
+	// sizeBuf := make([]byte, 4)
+	// _, err =conn.Read(sizeBuf)
+	// if err != nil {
+	// 	return err
+	// }
 
-	writeSize := binary.LittleEndian.Uint32(sizeBuf)
-	log.Printf("Receiving file of size: %d bytes\n", writeSize)
+	// writeSize := binary.LittleEndian.Uint32(sizeBuf)
+	// log.Printf("Receiving file of size: %d bytes\n", writeSize)
 
-	chunkData := make([]byte, writeSize)
+	// chunkData := make([]byte, writeSize)
 
-	// Read the write contents from connection into the byte array
-	_, err = io.ReadFull(conn, chunkData)
-	if err != nil {
-		return err
-	}
+	// // Read the write contents from connection into the byte array
+	// _, err = io.ReadFull(conn, chunkData)
+	// if err != nil {
+	// 	return err
+	// }
 	writeResponse := common.ClientChunkServerWriteResponse{
 		Status:       true,
 		ErrorMessage: "",
 	}
 	// store that data into the chunkServers LRU cache
-	err = chunkServer.writeChunkToCache(req.MutationId, chunkData)
+	err = chunkServer.writeChunkToCache(req.MutationId, req.ChunkData)
 	if err != nil { // there should not be any error her ig
 		writeResponse.ErrorMessage = "error while writing chunk on chunkServer"
 		writeResponse.Status = false
@@ -800,7 +803,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 
 		switch messageType {
 		case common.PrimaryChunkCommitRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 20*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
 			if err != nil {
 				return
 			}
@@ -809,7 +812,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.InterChunkServerCommitRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 30*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
 			if err != nil {
 				return
 			}
@@ -827,7 +830,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.ClientChunkServerWriteRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 30*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
 			if err != nil {
 				return
 			}
@@ -854,6 +857,13 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 			log.Println("Received unknown request type:", messageType)
 		}
 	}
+}
+
+func (chunkServer *ChunkServer) Shutdown() error {
+	chunkServer.mu.Lock()
+	defer chunkServer.mu.Unlock()
+	chunkServer.listener.Close()
+	return nil
 }
 
 // tested
@@ -890,12 +900,20 @@ func (chunkServer *ChunkServer) Start() (string, error) {
 		startWG.Done()
 		defer listener.Close()
 		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Failed to accept connection: %v", err)
-				continue
-			}
-			go chunkServer.handleConnection(conn)
+				conn, err := listener.Accept()
+				if err != nil {
+					// Check if the listener was closed
+					if opErr, ok := err.(*net.OpError); ok {
+						// Check if it's a "use of closed" error
+						if strings.Contains(opErr.Error(), "use of closed") {
+							return
+						}
+					}
+					log.Printf("Failed to accept connection: %v", err)
+					continue
+				}
+				go chunkServer.handleConnection(conn)
+			
 		}
 	}()
 	startWG.Wait()

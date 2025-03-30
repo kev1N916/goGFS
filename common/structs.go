@@ -159,4 +159,5 @@ type InterChunkServerCommitResponse struct{
 type ClientChunkServerWriteRequest struct {
 	MutationId int64
 	ChunkHandle int64  // Capitalized field name
+	ChunkData []byte
 }

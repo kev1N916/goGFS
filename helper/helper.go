@@ -81,7 +81,7 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
 	// }
 	// Read the request length (2 bytes)
 	messageLength := make([]byte, 2)
-	_, err = io.ReadFull(conn, messageLength)
+	_, err =conn.Read(messageLength)
 	if err != nil {
 		log.Printf("Error reading request length: %v", err)
 		return constants.MessageType(0), nil, constants.ErrReadMessageLength

@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ const masterDir = "masterDir"
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
 	inTestMode             bool
+	shutDownChan           chan struct{}
 	Listener               net.Listener
 	ChunkServerConnections []*ChunkServerConnection
 	opLogger               *OpLogger
@@ -204,7 +206,7 @@ func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyB
 				SecondaryChunkServers: secondaryServers,
 				ErrorMessage:          "",
 			}
-		}else{
+		} else {
 			writeResponse.ErrorMessage = "no chunk servers available"
 		}
 	}
@@ -334,11 +336,11 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	}
 	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
 	master.ChunkServerConnections = append(master.ChunkServerConnections, chunkServerConnection)
-	server:=&Server{
-		Server: handshake.Port,
+	server := &Server{
+		Server:         handshake.Port,
 		NumberOfChunks: len(handshake.ChunkHandles),
 	}
-	heap.Push(master.ServerList,server)
+	heap.Push(master.ServerList, server)
 	master.mu.Unlock()
 
 	handshakeResponse := common.MasterChunkServerHandshakeResponse{
@@ -386,11 +388,12 @@ func (master *Master) SendHeartBeatToChunkServer(chunkServerConnection *ChunkSer
 	return nil
 }
 
-func (master *Master) Shutdown() error{
+func (master *Master) Shutdown() error {
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	err:=master.opLogger.currentOpLog.Sync()
-	if err!=nil{
+	master.Listener.Close()
+	err := master.opLogger.currentOpLog.Sync()
+	if err != nil {
 		return err
 	}
 	return master.opLogger.currentOpLog.Close()
@@ -420,6 +423,13 @@ func (master *Master) Start() error {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
+				// Check if the listener was closed
+				if opErr, ok := err.(*net.OpError); ok {
+					// Check if it's a "use of closed" error
+					if strings.Contains(opErr.Error(), "use of closed") {
+						return
+					}
+				}
 				log.Printf("Failed to accept connection: %v", err)
 				continue
 			}

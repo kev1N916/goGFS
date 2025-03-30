@@ -21,7 +21,10 @@ import (
 // Now the requests are anyways in a certain order, we can extract the MutationId from these requests and
 // send inter-chunkServer commit requests to the secondary chunkServers specifying this mutation order.
 func (chunkServer *ChunkServer) startCommitRequestHandler() {
-	const batchDuration = 3 * time.Second // specifies a batch duration
+
+	log.Println("started commit request handler")
+
+	const batchDuration = 2* time.Second // specifies a batch duration
 	const maxBatchSize = 100
 
 	for {
@@ -176,7 +179,7 @@ func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 // we could store the chunkHandle as well as part of the mapping but I dont think thats necessary as we are anyways associating the
 // chunkHandle with the mutationId in the subsequent commit requests which are sent between the chunkServers so I guess its fine.
 func (chunkServer *ChunkServer) writeChunkToCache(mutationId int64, data []byte) error {
-	chunkServer.lruCache.Put(mutationId, data)
+	chunkServer.LruCache.Put(mutationId, data)
 	return nil
 }
 
@@ -185,7 +188,7 @@ func (chunkServer *ChunkServer) writeChunkToCache(mutationId int64, data []byte)
 // or if the data is not present in the cache
 func (chunkServer *ChunkServer) mutateChunk(file *os.File, mutationId int64, chunkOffset int64) (int64, error) {
 
-	data, present := chunkServer.lruCache.Get(mutationId)
+	data, present := chunkServer.LruCache.Get(mutationId)
 	if !present {
 		return 0, errors.New("data not present in lru cache")
 	}
