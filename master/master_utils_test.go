@@ -18,12 +18,12 @@ func TestLease(t *testing.T) {
 		now := time.Now()
 		
 		lease := Lease{
-			server:    serverName,
-			grantTime: now,
+			Server:    serverName,
+			GrantTime: now,
 		}
 
-		assert.Equal(t, serverName, lease.server, "Server name should match the input")
-		assert.Equal(t, now, lease.grantTime, "Grant time should match the input time")
+		assert.Equal(t, serverName, lease.Server, "Server name should match the input")
+		assert.Equal(t, now, lease.GrantTime, "Grant time should match the input time")
 	})
 
 	t.Run("should handle different server name scenarios", func(t *testing.T) {
@@ -41,14 +41,14 @@ func TestLease(t *testing.T) {
 
 		for _, tc := range testCases {
 			lease := Lease{
-				server:    tc.serverName,
-				grantTime: time.Now(),
+				Server:    tc.serverName,
+				GrantTime: time.Now(),
 			}
 
 			if tc.expectValid {
-				assert.NotEmpty(t, lease.server, "Server name should not be empty")
+				assert.NotEmpty(t, lease.Server, "Server name should not be empty")
 			} else {
-				assert.Empty(t, lease.server, "Server name should be empty")
+				assert.Empty(t, lease.Server, "Server name should be empty")
 			}
 		}
 	})
@@ -56,7 +56,7 @@ func TestLease(t *testing.T) {
 	t.Run("should validate grant time scenarios", func(t *testing.T) {
 		testCases := []struct {
 			name       string
-			grantTime  time.Time
+			GrantTime  time.Time
 			expectPast bool
 		}{
 			{"Current time", time.Now(), true},
@@ -67,11 +67,11 @@ func TestLease(t *testing.T) {
 
 		for _, tc := range testCases {
 			lease := Lease{
-				server:    "test-server",
-				grantTime: tc.grantTime,
+				Server:    "test-server",
+				GrantTime: tc.GrantTime,
 			}
 
-			isPast := lease.grantTime.Before(time.Now()) || lease.grantTime.Equal(time.Now())
+			isPast := lease.GrantTime.Before(time.Now()) || lease.GrantTime.Equal(time.Now())
 			assert.Equal(t, tc.expectPast, isPast, "Grant time should be in the past or present")
 		}
 	})
@@ -80,18 +80,18 @@ func TestLease(t *testing.T) {
 		now := time.Now()
 		
 		lease1 := Lease{
-			server:    "server-1",
-			grantTime: now,
+			Server:    "server-1",
+			GrantTime: now,
 		}
 		
 		lease2 := Lease{
-			server:    "server-1",
-			grantTime: now,
+			Server:    "server-1",
+			GrantTime: now,
 		}
 		
 		lease3 := Lease{
-			server:    "server-2",
-			grantTime: now,
+			Server:    "server-2",
+			GrantTime: now,
 		}
 
 		assert.Equal(t, lease1, lease2, "Leases with same server and grant time should be equal")
@@ -101,8 +101,8 @@ func TestLease(t *testing.T) {
 	t.Run("should handle zero value lease correctly", func(t *testing.T) {
 		var zeroLease Lease
 
-		assert.Empty(t, zeroLease.server, "Zero value lease should have an empty server")
-		assert.True(t, zeroLease.grantTime.IsZero(), "Zero value lease should have a zero time")
+		assert.Empty(t, zeroLease.Server, "Zero value lease should have an empty server")
+		assert.True(t, zeroLease.GrantTime.IsZero(), "Zero value lease should have a zero time")
 	})
 }
 
@@ -245,8 +245,8 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		// Verify lease was created
 		lease, exists := master.LeaseGrants[1]
 		assert.True(t, exists)
-		assert.Equal(t, primaryServer, lease.server)
-		assert.NotZero(t, lease.grantTime)
+		assert.Equal(t, primaryServer, lease.Server)
+		assert.NotZero(t, lease.GrantTime)
 	})
 
 	t.Run("should return error when no chunk servers exist", func(t *testing.T) {
@@ -274,8 +274,8 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 			},
 			LeaseGrants: map[int64]*Lease{
 				1: {
-					server:    "server1",
-					grantTime: initialGrantTime,
+					Server:    "server1",
+					GrantTime: initialGrantTime,
 				},
 			},
 			mu: sync.Mutex{},
@@ -291,7 +291,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		// Verify lease was renewed
 		lease, exists := master.LeaseGrants[1]
 		assert.True(t, exists)
-		assert.True(t, lease.grantTime.After(initialGrantTime))
+		assert.True(t, lease.GrantTime.After(initialGrantTime))
 	})
 
 	t.Run("should choose new primary when lease is invalid", func(t *testing.T) {
@@ -303,8 +303,8 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 			},
 			LeaseGrants: map[int64]*Lease{
 				1: {
-					server:    "server1",
-					grantTime: expiredTime,
+					Server:    "server1",
+					GrantTime: expiredTime,
 				},
 			},
 			mu: sync.Mutex{},
@@ -321,8 +321,8 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 		// Verify lease was updated
 		lease, exists := master.LeaseGrants[1]
 		assert.True(t, exists)
-		assert.Equal(t, primaryServer, lease.server)
-		assert.NotZero(t, lease.grantTime)
+		assert.Equal(t, primaryServer, lease.Server)
+		assert.NotZero(t, lease.GrantTime)
 	})
 
 	t.Run("should handle single server scenario", func(t *testing.T) {
@@ -670,10 +670,10 @@ func TestHandleChunkCreation(t *testing.T) {
 		
 		// Add servers to the priority queue
 		servers := []*Server{
-			{server: "server1", NumberOfChunks: 5},
-			{server: "server2", NumberOfChunks: 7},
-			{server: "server3", NumberOfChunks: 3},
-			{server: "server4", NumberOfChunks: 2},
+			{Server: "server1", NumberOfChunks: 5},
+			{Server: "server2", NumberOfChunks: 7},
+			{Server: "server3", NumberOfChunks: 3},
+			{Server: "server4", NumberOfChunks: 2},
 		}
 		
 		for _, server := range servers {
@@ -694,8 +694,8 @@ func TestHandleChunkCreation(t *testing.T) {
 		fileName := "test-file"
 
 		// Perform chunk creation
-		chunkHandle, primaryServer, secondaryServers, err := master.handleChunkCreation(fileName)
-
+		chunkHandle, err := master.handleChunkCreation(fileName)
+		primaryServer,secondaryServers,err:=master.assignChunkServers(chunkHandle)
 		// Assertions
 		assert.NoError(t, err)
 		assert.NotEqual(t, int64(-1), chunkHandle)
@@ -728,10 +728,10 @@ func TestHandleChunkCreation(t *testing.T) {
 		
 		// Add servers to the priority queue
 		servers := []*Server{
-			{server: "server1", NumberOfChunks: 5},
-			{server: "server2", NumberOfChunks: 7},
-			{server: "server3", NumberOfChunks: 3},
-			{server: "server4", NumberOfChunks: 2},
+			{Server: "server1", NumberOfChunks: 5},
+			{Server: "server2", NumberOfChunks: 7},
+			{Server: "server3", NumberOfChunks: 3},
+			{Server: "server4", NumberOfChunks: 2},
 		}
 		
 		for _, server := range servers {
@@ -755,8 +755,8 @@ func TestHandleChunkCreation(t *testing.T) {
 		master.FileMap[fileName] = []Chunk{existingChunk}
 
 		// Perform chunk creation for existing file
-		chunkHandle, primaryServer, secondaryServers, err := master.handleChunkCreation(fileName)
-
+		chunkHandle, err := master.handleChunkCreation(fileName)
+		primaryServer,secondaryServers,err:=master.assignChunkServers(chunkHandle)
 		// Assertions
 		assert.NoError(t, err)
 		assert.Equal(t, existingChunk.ChunkHandle, chunkHandle)
@@ -779,9 +779,9 @@ func TestHandleChunkCreation(t *testing.T) {
 		
 		// Add servers to the priority queue
 		servers := []*Server{
-			{server: "server1", NumberOfChunks: 5},
-			{server: "server2", NumberOfChunks: 7},
-			{server: "server3", NumberOfChunks: 3},
+			{Server: "server1", NumberOfChunks: 5},
+			{Server: "server2", NumberOfChunks: 7},
+			{Server: "server3", NumberOfChunks: 3},
 		}
 		
 		for _, server := range servers {
@@ -812,8 +812,8 @@ func TestHandleChunkCreation(t *testing.T) {
 		// This would typically need to be implemented in the Master struct for a real test
 
 		// Perform chunk creation
-		resultChunkHandle, primaryServer, secondaryServers, err := master.handleChunkCreation(fileName)
-
+		resultChunkHandle, err := master.handleChunkCreation(fileName)
+		primaryServer,secondaryServers,err:=master.assignChunkServers(resultChunkHandle)
 		// Assertions
 		assert.NoError(t, err)
 		assert.Equal(t, chunkHandle, resultChunkHandle)
@@ -871,7 +871,7 @@ func TestHandleChunkCreation(t *testing.T) {
 		// Add more servers to handle concurrent requests
 		for i := range 30 {
 			heap.Push(pq, &Server{
-				server:         "server" + string(rune(i+'0')),
+				Server:         "server" + string(rune(i+'0')),
 				NumberOfChunks: i % 10,
 			})
 		}
@@ -905,13 +905,14 @@ func TestHandleChunkCreation(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				chunkHandle, primaryServer, secondaryServers, err := master.handleChunkCreation(fileName)
+				resultChunkHandle, _ := master.handleChunkCreation(fileName)
+				primaryServer,secondaryServers,err:=master.assignChunkServers(resultChunkHandle)
 				resultChan <- struct {
 					chunkHandle     int64
 					primaryServer   string
 					secondaryServers []string
 					err            error
-				}{chunkHandle, primaryServer, secondaryServers, err}
+				}{resultChunkHandle, primaryServer, secondaryServers, err}
 			}()
 		}
 		wg.Wait()		

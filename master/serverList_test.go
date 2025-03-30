@@ -20,9 +20,9 @@ func TestPriorityQueuePushAndPop(t *testing.T) {
 
 	// Add servers with different chunk counts
 	servers := []*Server{
-		{server: "server1", NumberOfChunks: 5},
-		{server: "server2", NumberOfChunks: 10},
-		{server: "server3", NumberOfChunks: 3},
+		{Server: "server1", NumberOfChunks: 5},
+		{Server: "server2", NumberOfChunks: 10},
+		{Server: "server3", NumberOfChunks: 3},
 	}
 
 	for _, server := range servers {
@@ -40,8 +40,8 @@ func TestPriorityQueuePushAndPop(t *testing.T) {
 	
 	for i, expected := range expectedOrder {
 		item := heap.Pop(pq).(*Server)
-		if item.server != expected {
-			t.Errorf("Pop %d: expected server %s, got %s", i, expected, item.server)
+		if item.Server != expected {
+			t.Errorf("Pop %d: expected server %s, got %s", i, expected, item.Server)
 		}
 	}
 
@@ -56,9 +56,9 @@ func TestPriorityQueueUpdate(t *testing.T) {
 	heap.Init(pq)
 
 	// Add servers
-	server1 := &Server{server: "server1", NumberOfChunks: 5}
-	server2 := &Server{server: "server2", NumberOfChunks: 10}
-	server3 := &Server{server: "server3", NumberOfChunks: 3}
+	server1 := &Server{Server: "server1", NumberOfChunks: 5}
+	server2 := &Server{Server: "server2", NumberOfChunks: 10}
+	server3 := &Server{Server: "server3", NumberOfChunks: 3}
 
 	heap.Push(pq, server1)
 	heap.Push(pq, server2)
@@ -69,15 +69,15 @@ func TestPriorityQueueUpdate(t *testing.T) {
 
 	// First pop should now be server2
 	item := heap.Pop(pq).(*Server)
-	if item.server != "server2" || item.NumberOfChunks != 1 {
+	if item.Server != "server2" || item.NumberOfChunks != 1 {
 		t.Errorf("Expected server2 with 1 chunks, got %s with %d chunks", 
-			item.server, item.NumberOfChunks)
+			item.Server, item.NumberOfChunks)
 	}
 
 	// Second pop should be server3
 	item = heap.Pop(pq).(*Server)
-	if item.server != "server3" {
-		t.Errorf("Expected server2, got %s", item.server)
+	if item.Server != "server3" {
+		t.Errorf("Expected server2, got %s", item.Server)
 	}
 
 	// Update server1 before popping
@@ -85,9 +85,9 @@ func TestPriorityQueueUpdate(t *testing.T) {
 	
 	// Last item should be server1 with updated value
 	item = heap.Pop(pq).(*Server)
-	if item.server != "server1" || item.NumberOfChunks != 20 {
+	if item.Server != "server1" || item.NumberOfChunks != 20 {
 		t.Errorf("Expected server1 with 20 chunks, got %s with %d chunks", 
-			item.server, item.NumberOfChunks)
+			item.Server, item.NumberOfChunks)
 	}
 }
 
@@ -96,8 +96,8 @@ func TestPriorityQueueEdgeCases(t *testing.T) {
 	heap.Init(pq)
 
 	// Test with identical priorities
-	server1 := &Server{server: "server1", NumberOfChunks: 5}
-	server2 := &Server{server: "server2", NumberOfChunks: 5}
+	server1 := &Server{Server: "server1", NumberOfChunks: 5}
+	server2 := &Server{Server: "server2", NumberOfChunks: 5}
 	
 	heap.Push(pq, server1)
 	heap.Push(pq, server2)
@@ -108,10 +108,10 @@ func TestPriorityQueueEdgeCases(t *testing.T) {
 	
 	// We don't assert specific order here since heap doesn't guarantee stable sort
 	// Just check both items were retrieved
-	if (item1.server != "server1" && item1.server != "server2") ||
-	   (item2.server != "server1" && item2.server != "server2") ||
-	   (item1.server == item2.server) {
-		t.Errorf("Unexpected items returned: %s and %s", item1.server, item2.server)
+	if (item1.Server != "server1" && item1.Server != "server2") ||
+	   (item2.Server != "server1" && item2.Server != "server2") ||
+	   (item1.Server == item2.Server) {
+		t.Errorf("Unexpected items returned: %s and %s", item1.Server, item2.Server)
 	}
 }
 
@@ -122,7 +122,7 @@ func TestPriorityQueueStress(t *testing.T) {
 	// Add a large number of servers
 	for i := 0; i < 100; i++ {
 		heap.Push(pq, &Server{
-			server:         "server" + string(rune(i+'0')),
+			Server:         "server" + string(rune(i+'0')),
 			NumberOfChunks: i,
 		})
 	}
@@ -143,16 +143,16 @@ func TestPriorityQueueSequence(t *testing.T) {
 	heap.Init(pq)
 
 	// Sequence of operations
-	server1 := &Server{server: "server1", NumberOfChunks: 5}
-	server2 := &Server{server: "server2", NumberOfChunks: 10}
+	server1 := &Server{Server: "server1", NumberOfChunks: 5}
+	server2 := &Server{Server: "server2", NumberOfChunks: 10}
 	
 	heap.Push(pq, server1)
 	heap.Push(pq, server2)
 	
 	// Top should be server1 with 5 chunks
 	top := heap.Pop(pq).(*Server)
-	if top.server != "server1" {
-		t.Errorf("Expected server1, got %s", top.server)
+	if top.Server != "server1" {
+		t.Errorf("Expected server1, got %s", top.Server)
 	}
 	
 	// Push it back with fewer chunks
@@ -164,8 +164,8 @@ func TestPriorityQueueSequence(t *testing.T) {
 	
 	// Now server1 should be on top
 	top = heap.Pop(pq).(*Server)
-	if top.server != "server1" || top.NumberOfChunks != 7 {
+	if top.Server != "server1" || top.NumberOfChunks != 7 {
 		t.Errorf("Expected server1 with 7 chunks, got %s with %d chunks", 
-			top.server, top.NumberOfChunks)
+			top.Server, top.NumberOfChunks)
 	}
 }

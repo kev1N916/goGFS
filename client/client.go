@@ -222,7 +222,7 @@ func (client *Client) Read(filename string, chunkIndex int) ([]byte,error) {
 func (client *Client) WriteToMasterServer(request common.ClientMasterWriteRequest) (*common.ClientMasterWriteResponse, error) {
 
 	// connect to the master
-	conn, err := net.Dial("tcp", client.masterServer)
+	conn, err := net.Dial("tcp", ":"+client.masterServer)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +415,7 @@ func (client *Client) createNewChunkForFile(filename string) error {
 	}
 
 	requestBytes, _ := helper.EncodeMessage(common.ClientMasterCreateNewChunkRequestType, newChunkRequest)
-	conn, err := net.Dial("tcp", client.masterServer)
+	conn, err := net.Dial("tcp", ":"+client.masterServer)
 	if err != nil {
 		return err
 	}
@@ -526,7 +526,7 @@ func (client *Client) replicateChunkToAllServers(writeResponse *common.ClientMas
 // Sends a delete request to the master and then depending on the response status , the delete 
 // request could have succeeded or failed.
 func (client *Client) SendDeleteRequestToMaster(deleteRequest common.ClientMasterDeleteRequest) error {
-	conn, dialErr := net.Dial("tcp", client.masterServer)
+	conn, dialErr := net.Dial("tcp", ":"+client.masterServer)
 	if dialErr != nil {
 		return errors.New("failed to dial master server")
 	}

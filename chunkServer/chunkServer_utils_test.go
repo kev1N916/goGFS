@@ -214,7 +214,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Returns false when chunk has no lease grant", func(t *testing.T) {
 		// Setup a ChunkServer with empty lease grants
 		server := &ChunkServer{
-			leaseGrants: make(map[int64]*LeaseGrant),
+			LeaseGrants: make(map[int64]*LeaseGrant),
 			mu:          sync.Mutex{},
 		}
 
@@ -230,7 +230,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Returns true for valid lease grant within time window", func(t *testing.T) {
 		// Setup a ChunkServer with a valid, recent lease grant
 		server := &ChunkServer{
-			leaseGrants: map[int64]*LeaseGrant{
+			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
 					chunkHandle: 123,
 					granted:     true,
@@ -252,7 +252,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Returns false for expired lease grant (>= 60 seconds)", func(t *testing.T) {
 		// Setup a ChunkServer with an expired lease grant
 		server := &ChunkServer{
-			leaseGrants: map[int64]*LeaseGrant{
+			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
 					chunkHandle: 123,
 					granted:     true,
@@ -271,7 +271,7 @@ func TestCheckIfPrimary(t *testing.T) {
 		}
 
 		// Test with a lease that's well past expiration
-		server.leaseGrants[123].grantTime = time.Now().Add(-90 * time.Second) // 90 seconds ago
+		server.LeaseGrants[123].grantTime = time.Now().Add(-90 * time.Second) // 90 seconds ago
 		result = server.checkIfPrimary(123)
         
 		if result != false {
@@ -282,7 +282,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Handles edge case at exactly 60 seconds", func(t *testing.T) {
 		// Setup a ChunkServer with a lease grant exactly at the time boundary
 		server := &ChunkServer{
-			leaseGrants: map[int64]*LeaseGrant{
+			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
 					chunkHandle: 123,
 					granted:     true,
@@ -304,7 +304,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Handles lease grant with different chunk handle", func(t *testing.T) {
 		// Setup a ChunkServer with a valid lease grant for a different chunk
 		server := &ChunkServer{
-			leaseGrants: map[int64]*LeaseGrant{
+			LeaseGrants: map[int64]*LeaseGrant{
 				456: {
 					chunkHandle: 456,
 					granted:     true,
@@ -326,7 +326,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Thread safety with concurrent access", func(t *testing.T) {
 		// Setup a ChunkServer with a valid lease grant
 		server := &ChunkServer{
-			leaseGrants: map[int64]*LeaseGrant{
+			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
 					chunkHandle: 123,
 					granted:     true,
@@ -372,7 +372,7 @@ func TestCheckIfPrimary(t *testing.T) {
 	t.Run("Returns false for non-granted lease", func(t *testing.T) {
 		// Setup a ChunkServer with a lease that exists but isn't granted
 		server := &ChunkServer{
-			leaseGrants: map[int64]*LeaseGrant{
+			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
 					chunkHandle: 123,
 					granted:     false, // Lease exists but isn't granted

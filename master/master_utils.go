@@ -45,13 +45,15 @@ func (master *Master) chooseChunkServers() []string {
 	// defer master.mu.Unlock()
 	servers := make([]*Server, 0)
 	for range 3 {
-		server:=master.ServerList.Pop().(*Server)
-		servers=append(servers, server)
+		if master.ServerList.Len() > 0 {
+			server := master.ServerList.Pop().(*Server)
+			servers = append(servers, server)
+		}
 	}
 
-	serverNames:=make([]string,0)
-	for i:=range(servers){
-		serverNames=append(serverNames,servers[i].server )
+	serverNames := make([]string, 0)
+	for i := range servers {
+		serverNames = append(serverNames, servers[i].Server)
 		servers[i].NumberOfChunks++
 		master.ServerList.Push(servers[i])
 	}
@@ -72,7 +74,9 @@ func (master *Master) choosePrimaryIfLeaseDoesNotExist(servers []string) (string
 	rand.Shuffle(len(servers), func(i, j int) {
 		servers[i], servers[j] = servers[j], servers[i]
 	})
-
+	if(len(servers)==0){
+		return "",[]string{}
+	}
 	primaryServer := servers[0] // First server after shuffling is primary
 	var secondaryServers []string
 	if len(servers) > 1 {
@@ -102,13 +106,13 @@ func (master *Master) isLeaseValid(lease *Lease, server string) bool {
 		return false
 	}
 	if server != "" {
-		if lease.server != server {
+		if lease.Server != server {
 			return false
 		}
 	}
 	// checks if the time difference between the lease grant time and the current time is
 	// less than 60 seconds
-	return (time.Now().Unix()-lease.grantTime.Unix() < 60)
+	return (time.Now().Unix()-lease.GrantTime.Unix() < 60)
 }
 
 // tested indirectly
@@ -116,8 +120,8 @@ func (master *Master) isLeaseValid(lease *Lease, server string) bool {
 // to the lease
 func (master *Master) renewLeaseGrant(lease *Lease) {
 
-	newTime := lease.grantTime.Add(60 * time.Second)
-	lease.grantTime = newTime
+	newTime := lease.GrantTime.Add(60 * time.Second)
+	lease.GrantTime = newTime
 }
 
 // tested
@@ -135,17 +139,17 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 	}
 	// checks if there is already an existing lease
 	if !doesLeaseExist {
-		newLease := &Lease{}
 		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
 		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
-		newLease.grantTime = time.Now()
-		newLease.server = primaryServer
 		if !master.inTestMode {
 			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
 			if err != nil {
 				return "", nil, err
 			}
 		}
+		newLease := &Lease{}
+		newLease.GrantTime = time.Now()
+		newLease.Server = primaryServer
 		master.LeaseGrants[chunkHandle] = newLease
 		return primaryServer, secondaryServers, nil
 	}
@@ -155,25 +159,32 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 		// if it is we renew the lease
 		master.renewLeaseGrant(lease)
 		if !master.inTestMode {
-			err := master.grantLeaseToPrimaryServer(lease.server, chunkHandle)
+			err := master.grantLeaseToPrimaryServer(lease.Server, chunkHandle)
 			if err != nil {
 				return "", nil, err
 			}
 		}
-		secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.server, chunkServers)
-		return lease.server, secondaryServers, nil
+		secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.Server, chunkServers)
+		return lease.Server, secondaryServers, nil
 	} else {
-		// if it isnt valid we choose new primary and secondary servers
-
+		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
 		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
-		master.LeaseGrants[chunkHandle].grantTime = time.Now()
-		master.LeaseGrants[chunkHandle].server = primaryServer
 		if !master.inTestMode {
 			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
 			if err != nil {
 				return "", nil, err
 			}
 		}
+		newLease := &Lease{}
+		newLease.GrantTime = time.Now()
+		newLease.Server = primaryServer
+		if !master.inTestMode {
+			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
+			if err != nil {
+				return "", nil, err
+			}
+		}
+		master.LeaseGrants[chunkHandle] = newLease
 		return primaryServer, secondaryServers, nil
 	}
 }
@@ -258,9 +269,29 @@ func (master *Master) tempDeleteFile(fileName string, newName string) {
 	master.FileMap[newFileName] = chunks
 }
 
+func (master *Master) assignChunkServers(chunkHandle int64) (string, []string, error) {
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	_, chunkServerExists := master.ChunkServerHandler[chunkHandle]
+	if !chunkServerExists {
+		chosenServers:= master.chooseChunkServers()
+		if(len(chosenServers)>1){
+			master.ChunkServerHandler[chunkHandle]=chosenServers
+		}else{
+			delete(master.ChunkServerHandler,chunkHandle)
+			return "", nil, errors.New("no chunk servers available")
+		}
+	}
+	// assign primary and secondary chunkServers
+	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
+	if err != nil {
+		return "", nil, err
+	}
+	return primaryServer, secondaryServers, nil
+}
 
 // tested
-func (master *Master) handleChunkCreation(fileName string) (int64, string, []string, error) {
+func (master *Master) handleChunkCreation(fileName string) (int64, error) {
 	// opsToLog := make([], 0)
 	op := Operation{
 		Type:        common.ClientMasterWriteRequestType,
@@ -287,31 +318,14 @@ func (master *Master) handleChunkCreation(fileName string) (int64, string, []str
 		if !master.inTestMode {
 			err := master.opLogger.writeToOpLog(op)
 			if err != nil {
-				return -1, "", nil, err
+				return -1, err
 			}
 		}
 		master.FileMap[fileName] = append(master.FileMap[fileName], chunk)
 	}
 	chunkHandle := master.FileMap[fileName][len(master.FileMap[fileName])-1].ChunkHandle
-	// if chunk servers have not been designated for the chunkHandle then we choose them
-	_, chunkServerExists := master.ChunkServerHandler[chunkHandle]
-	if !chunkServerExists {
-		master.ChunkServerHandler[chunkHandle] = master.chooseChunkServers()
-	}
-	// assign primary and secondary chunkServers
-	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
-	if err != nil {
-		return -1, "", nil, err
-	}
-	// writeResponse := common.ClientMasterWriteResponse{
-	// 	ChunkHandle:           chunkHandle,
-	// 	// a mutationId is generated so that during the commit request we can mantain an order
-	// 	// between concurrent requests
-	// 	MutationId:            master.idGenerator.Generate().Int64(),
-	// 	PrimaryChunkServer:    primaryServer,
-	// 	SecondaryChunkServers: secondaryServers,
-	// }
-	return chunkHandle, primaryServer, secondaryServers, nil
+
+	return chunkHandle, nil
 
 }
 
@@ -330,7 +344,7 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 		return err
 	}
 	// master
-	master.LeaseGrants[leaseRequest.ChunkHandle].grantTime = master.LeaseGrants[leaseRequest.ChunkHandle].grantTime.Add(30 * time.Second)
+	master.LeaseGrants[leaseRequest.ChunkHandle].GrantTime = master.LeaseGrants[leaseRequest.ChunkHandle].GrantTime.Add(30 * time.Second)
 	return nil
 }
 
@@ -395,7 +409,7 @@ func (master *Master) recover() error {
 	return nil
 }
 
-// tested 
+// tested
 func (master *Master) readCheckpoint() error {
 	checkpoint, err := os.Open("checkpoint.chk")
 	if err != nil {
@@ -466,8 +480,8 @@ func (master *Master) readCheckpoint() error {
 		for range int(totalMappings) {
 			bytesRead, file, chunks, err := decodeFileAndChunks(checkPointData, offset)
 			if err != nil {
-				err=os.Truncate("checkpoint.chk",int64(offset))
-				if err!=nil{
+				err = os.Truncate("checkpoint.chk", int64(offset))
+				if err != nil {
 					return err
 				}
 				break
@@ -484,14 +498,14 @@ func (master *Master) readCheckpoint() error {
 				}
 			}
 			if !isDeletedFile {
-				chunkHandles:=make([]int64,0)
-				for _,val:=range(chunks){
+				chunkHandles := make([]int64, 0)
+				for _, val := range chunks {
 					chunkHandles = append(chunkHandles, val.ChunkHandle)
 				}
 				master.FileMap[file] = chunks
 				master.ChunkHandles = append(master.ChunkHandles, chunkHandles...)
 			}
-			offset+=bytesRead
+			offset += bytesRead
 		}
 	}
 	return nil
@@ -590,8 +604,7 @@ func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 	return buffer
 }
 
-
-// tested 
+// tested
 func decodeFileAndChunks(data []byte, offset int) (int, string, []Chunk, error) {
 	// Ensure there's enough data to read file length (2 bytes)
 	if offset+2 > len(data) {

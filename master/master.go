@@ -12,10 +12,12 @@ import (
 	"github.com/involk-secure-1609/goGFS/helper"
 )
 
+const masterDir = "masterDir"
+
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
 	inTestMode             bool
-	listener               net.Listener
+	Listener               net.Listener
 	ChunkServerConnections []*ChunkServerConnection
 	opLogger               *OpLogger
 	LastCheckpointTime     time.Time
@@ -25,7 +27,7 @@ type Master struct {
 	Port                   string
 	LeaseGrants            map[int64]*Lease
 	FileMap                map[string][]Chunk // maps file names to array of chunkIds
-	ChunkHandles           []int64      // contains all the chunkHandles of all the non-deleted files
+	ChunkHandles           []int64            // contains all the chunkHandles of all the non-deleted files
 	ChunkServerHandler     map[int64][]string // maps chunkIds to the chunkServers which store those chunks
 	mu                     sync.Mutex
 }
@@ -47,12 +49,12 @@ type ChunkServerConnection struct {
 // chunkServers can extend their leases by sending extension requests on heartbeat messages
 // regularly exchanged with the masterServer
 type Lease struct {
-	server    string
-	grantTime time.Time
+	Server    string
+	GrantTime time.Time
 }
 
 // NewMaster creates and initializes a new Master instance
-func NewMaster(port string,inTestMode bool) (*Master, error) {
+func NewMaster(port string, inTestMode bool) (*Master, error) {
 	node, err := snowflake.NewNode(1)
 	if err != nil {
 		return nil, err
@@ -60,16 +62,16 @@ func NewMaster(port string,inTestMode bool) (*Master, error) {
 	pq := &ServerList{}
 	heap.Init(pq)
 	master := &Master{
-		inTestMode: inTestMode,
+		inTestMode:             inTestMode,
 		ChunkServerConnections: make([]*ChunkServerConnection, 0),
 		// currentOpLog: opLogFile,
-		ServerList:   pq,
-		idGenerator:  node,
-		Port:         port,
-		FileMap:      make(map[string][]Chunk),
-		ChunkHandles: make([]int64, 0),
+		ServerList:         pq,
+		idGenerator:        node,
+		Port:               port,
+		FileMap:            make(map[string][]Chunk),
+		ChunkHandles:       make([]int64, 0),
 		ChunkServerHandler: make(map[int64][]string),
-		LeaseGrants:  make(map[int64]*Lease),
+		LeaseGrants:        make(map[int64]*Lease),
 	}
 	opLogger, err := NewOpLogger(master)
 	if err != nil {
@@ -117,8 +119,8 @@ func (master *Master) handleClientMasterReadRequest(conn net.Conn, requestBodyBy
 	readResponse.ChunkHandle = chunk.ChunkHandle
 	readResponse.ChunkServers = chunkServers
 	readResponse.ErrorMessage = ""
-	err=master.writeMasterReadResponse(conn, readResponse)
-	if err!=nil{
+	err = master.writeMasterReadResponse(conn, readResponse)
+	if err != nil {
 		return err
 	}
 	return nil
@@ -187,14 +189,23 @@ func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyB
 		SecondaryChunkServers: make([]string, 0),
 		ErrorMessage:          "error during write request on master ",
 	}
-	chunkHandle, primaryServer, secondaryServers, err := master.handleChunkCreation(request.Filename)
+
+	// if an error occurs while we write to the opLog then a chunkHandle will not be created
+	// and this will return an error, if that happens then we shudnt be assigning chunkServers
+	chunkHandle, err := master.handleChunkCreation(request.Filename)
+	// primaryServer,secondaryServers,err:=master.assignChunkServers(chunkHandle)
 	if err == nil {
-		writeResponse = common.ClientMasterWriteResponse{
-			ChunkHandle:           chunkHandle,
-			MutationId:            master.idGenerator.Generate().Int64(),
-			PrimaryChunkServer:    primaryServer,
-			SecondaryChunkServers: secondaryServers,
-			ErrorMessage:          "",
+		primaryServer, secondaryServers, err := master.assignChunkServers(chunkHandle)
+		if err == nil {
+			writeResponse = common.ClientMasterWriteResponse{
+				ChunkHandle:           chunkHandle,
+				MutationId:            master.idGenerator.Generate().Int64(),
+				PrimaryChunkServer:    primaryServer,
+				SecondaryChunkServers: secondaryServers,
+				ErrorMessage:          "",
+			}
+		}else{
+			writeResponse.ErrorMessage = "no chunk servers available"
 		}
 	}
 	// write a response back to the client
@@ -263,10 +274,10 @@ is free to delete its replicas of such chunks.
 
 // }
 
-func (master *Master) isChunkDeleted(chunkHandle int64) bool{
+func (master *Master) isChunkDeleted(chunkHandle int64) bool {
 
-	for _,val:=range(master.ChunkHandles){
-		if(val==chunkHandle){
+	for _, val := range master.ChunkHandles {
+		if val == chunkHandle {
 			return false
 		}
 	}
@@ -280,7 +291,7 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 	master.mu.Lock()
 	chunksToBeDeleted := make([]int64, 0)
 	for _, chunkHandle := range heartBeatResponse.ChunksPresent {
-		isChunkDeleted:=master.isChunkDeleted(chunkHandle)
+		isChunkDeleted := master.isChunkDeleted(chunkHandle)
 		if isChunkDeleted {
 			chunksToBeDeleted = append(chunksToBeDeleted, chunkHandle)
 		}
@@ -321,6 +332,15 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	for _, chunkId := range handshake.ChunkHandles {
 		master.ChunkServerHandler[chunkId] = append(master.ChunkServerHandler[chunkId], handshake.Port)
 	}
+	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
+	master.ChunkServerConnections = append(master.ChunkServerConnections, chunkServerConnection)
+	server:=&Server{
+		Server: handshake.Port,
+		NumberOfChunks: len(handshake.ChunkHandles),
+	}
+	heap.Push(master.ServerList,server)
+	master.mu.Unlock()
+
 	handshakeResponse := common.MasterChunkServerHandshakeResponse{
 		Message: "Handshake successful",
 	}
@@ -329,31 +349,27 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 		return err
 	}
 
-	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
-	master.ChunkServerConnections = append(master.ChunkServerConnections,chunkServerConnection)
-	master.mu.Unlock()
-
-	if (!master.inTestMode){
-	go master.startChunkServerHeartbeat(chunkServerConnection)
+	if !master.inTestMode {
+		go master.startChunkServerHeartbeat(chunkServerConnection)
 	}
 	return nil
 }
 
-func (master *Master) startChunkServerHeartbeat(chunkServerConnection *ChunkServerConnection){
+func (master *Master) startChunkServerHeartbeat(chunkServerConnection *ChunkServerConnection) {
 
-	ticker:=time.NewTicker(45*time.Second)
-	for{
-		select{
+	ticker := time.NewTicker(45 * time.Second)
+	for {
+		select {
 		case <-ticker.C:
-			err:=master.SendHeartBeatToChunkServer(chunkServerConnection)
+			err := master.SendHeartBeatToChunkServer(chunkServerConnection)
 			log.Println(err)
-			ticker.Reset(45*time.Second)
+			ticker.Reset(45 * time.Second)
 		default:
 		}
 	}
 }
 
-func (master *Master) SendHeartBeatToChunkServer(chunkServerConnection *ChunkServerConnection) error{
+func (master *Master) SendHeartBeatToChunkServer(chunkServerConnection *ChunkServerConnection) error {
 	heartBeatRequest := common.MasterToChunkServerHeartbeatRequest{
 		Heartbeat: "HEARTBEAT",
 	}
@@ -370,6 +386,15 @@ func (master *Master) SendHeartBeatToChunkServer(chunkServerConnection *ChunkSer
 	return nil
 }
 
+func (master *Master) Shutdown() error{
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	err:=master.opLogger.currentOpLog.Sync()
+	if err!=nil{
+		return err
+	}
+	return master.opLogger.currentOpLog.Close()
+}
 func (master *Master) Start() error {
 	err := master.recover()
 	if err != nil {
@@ -382,8 +407,7 @@ func (master *Master) Start() error {
 		return err
 		// log.Fatalf("Failed to start master server: %v", err)
 	}
-	master.listener = listener
-	
+	master.Listener = listener
 
 	go master.startBackgroundCheckpoint()
 	log.Println("Master server listening on :8080")
@@ -392,7 +416,7 @@ func (master *Master) Start() error {
 	// Main loop to accept connections from clients
 	go func() {
 		startWG.Done()
-		defer master.listener.Close()
+		defer master.Listener.Close()
 		for {
 			conn, err := listener.Accept()
 			if err != nil {

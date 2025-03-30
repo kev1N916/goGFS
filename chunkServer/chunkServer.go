@@ -41,7 +41,7 @@ type ChunkServer struct {
 	MasterConnection           net.Conn
 	address                    *net.TCPAddr
 	ChunkHandles               []int64
-	leaseGrants                map[int64]*LeaseGrant
+	LeaseGrants                map[int64]*LeaseGrant
 }
 
 type LeaseGrant struct {
@@ -61,7 +61,7 @@ func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 	chunkServer := &ChunkServer{
 		MasterPort:           masterPort,
 		ChunkHandles:         make([]int64, 0),
-		leaseGrants:          make(map[int64]*LeaseGrant),
+		LeaseGrants:          make(map[int64]*LeaseGrant),
 		mu:                   sync.Mutex{},
 		ChunkDirectory:       chunkDirectory,
 		commitRequestChannel: make(chan CommitRequest),
@@ -629,7 +629,7 @@ func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes [
 
 // func (chunkServer *ChunkServer) leaseRequestHandler() {
 // 	leaseRequests := make([]int64, 0)
-// 	for _, lease := range chunkServer.leaseGrants {
+// 	for _, lease := range chunkServer.LeaseGrants {
 // 		if time.Now().Unix()-chunkServer.leaseUsage[lease.chunkHandle].Unix() < 60 {
 // 			leaseRequests = append(leaseRequests, lease.chunkHandle)
 // 		}
@@ -679,7 +679,7 @@ func (chunkServer *ChunkServer) handleMasterLeaseRequest(requestBodyBytes []byte
 	}
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	chunkServer.leaseGrants[leaseRequest.ChunkHandle] = &LeaseGrant{
+	chunkServer.LeaseGrants[leaseRequest.ChunkHandle] = &LeaseGrant{
 		chunkHandle: leaseRequest.ChunkHandle,
 		granted:     true,
 		grantTime:   time.Now(),

@@ -143,7 +143,7 @@ func (chunkServer *ChunkServer) loadChunks() error {
 func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool {
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	leaseGrant, isPrimary := chunkServer.leaseGrants[chunkHandle]
+	leaseGrant, isPrimary := chunkServer.LeaseGrants[chunkHandle]
 	if !isPrimary {
 		return false
 	}

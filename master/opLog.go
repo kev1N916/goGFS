@@ -115,6 +115,7 @@ func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	}
 	// Ensure data is written to disk
 	return opLogger.currentOpLog.Sync()
+	
 }
 
 // tested 
