@@ -232,9 +232,9 @@ func TestCheckIfPrimary(t *testing.T) {
 		server := &ChunkServer{
 			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
-					chunkHandle: 123,
+					ChunkHandle: 123,
 					granted:     true,
-					grantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
+					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
 			mu: sync.Mutex{},
@@ -254,9 +254,9 @@ func TestCheckIfPrimary(t *testing.T) {
 		server := &ChunkServer{
 			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
-					chunkHandle: 123,
+					ChunkHandle: 123,
 					granted:     true,
-					grantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago (expired)
+					GrantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago (expired)
 				},
 			},
 			mu: sync.Mutex{},
@@ -271,7 +271,7 @@ func TestCheckIfPrimary(t *testing.T) {
 		}
 
 		// Test with a lease that's well past expiration
-		server.LeaseGrants[123].grantTime = time.Now().Add(-90 * time.Second) // 90 seconds ago
+		server.LeaseGrants[123].GrantTime = time.Now().Add(-90 * time.Second) // 90 seconds ago
 		result = server.checkIfPrimary(123)
         
 		if result != false {
@@ -284,9 +284,9 @@ func TestCheckIfPrimary(t *testing.T) {
 		server := &ChunkServer{
 			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
-					chunkHandle: 123,
+					ChunkHandle: 123,
 					granted:     true,
-					grantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago
+					GrantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago
 				},
 			},
 			mu: sync.Mutex{},
@@ -306,9 +306,9 @@ func TestCheckIfPrimary(t *testing.T) {
 		server := &ChunkServer{
 			LeaseGrants: map[int64]*LeaseGrant{
 				456: {
-					chunkHandle: 456,
+					ChunkHandle: 456,
 					granted:     true,
-					grantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
+					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
 			mu: sync.Mutex{},
@@ -328,9 +328,9 @@ func TestCheckIfPrimary(t *testing.T) {
 		server := &ChunkServer{
 			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
-					chunkHandle: 123,
+					ChunkHandle: 123,
 					granted:     true,
-					grantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
+					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
 			mu: sync.Mutex{},
@@ -374,9 +374,9 @@ func TestCheckIfPrimary(t *testing.T) {
 		server := &ChunkServer{
 			LeaseGrants: map[int64]*LeaseGrant{
 				123: {
-					chunkHandle: 123,
+					ChunkHandle: 123,
 					granted:     false, // Lease exists but isn't granted
-					grantTime:   time.Now().Add(-30 * time.Second),
+					GrantTime:   time.Now().Add(-30 * time.Second),
 				},
 			},
 			mu: sync.Mutex{},
@@ -390,8 +390,5 @@ func TestCheckIfPrimary(t *testing.T) {
 		if result != true {
 			t.Errorf("Current behavior: Expected true for non-granted lease with valid time, got %v", result)
 		}
-		
-		// Note: If the function should be checking the granted field, 
-		// that would be a potential bug to fix in the function itself.
 	})
 }

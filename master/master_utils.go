@@ -343,8 +343,16 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 	if err != nil {
 		return err
 	}
-	// master
-	master.LeaseGrants[leaseRequest.ChunkHandle].GrantTime = master.LeaseGrants[leaseRequest.ChunkHandle].GrantTime.Add(30 * time.Second)
+
+	lease,ok:= master.LeaseGrants[leaseRequest.ChunkHandle]
+	if !ok{
+		newLease:=&Lease{}
+		newLease.Server=leaseRequest.Server
+		newLease.GrantTime=time.Now()
+		master.LeaseGrants[leaseRequest.ChunkHandle]=newLease
+		return nil
+	}
+	lease.GrantTime=lease.GrantTime.Add(20*time.Second)
 	return nil
 }
 

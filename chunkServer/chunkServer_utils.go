@@ -69,15 +69,18 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 	}
 }
 
+func (chunkServer *ChunkServer) translateChunkHandleToFileName(chunkHandle int64) string{
+	fileName:=strconv.FormatInt(chunkHandle,10)
+	log.Println(fileName)
+	fullPath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
+	log.Println(fullPath)
+	return fullPath+".chunk"
+}
 func (chunkServer *ChunkServer) deleteChunk(chunkHandle int64) {
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	fileName:=strconv.FormatInt(chunkHandle,10)
-	log.Println(fileName)
-	filepath:=filepath.Join(chunkServer.ChunkDirectory,fileName)
-	log.Println(filepath)
-	// os.Open(filepath)
-	err:=os.Remove(filepath+".chunk")
+	fileName:=chunkServer.translateChunkHandleToFileName(chunkHandle)
+	err:=os.Remove(fileName)
 	if err!=nil{
 		log.Println(err)
 	}
@@ -150,7 +153,7 @@ func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool {
 	if !isPrimary {
 		return false
 	}
-	if time.Since(leaseGrant.grantTime) >= 60*time.Second {
+	if time.Since(leaseGrant.GrantTime) >= 60*time.Second {
 		return false
 	}
 	return true

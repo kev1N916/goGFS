@@ -47,9 +47,9 @@ type ChunkServer struct {
 }
 
 type LeaseGrant struct {
-	chunkHandle int64
+	ChunkHandle int64
 	granted     bool
-	grantTime   time.Time
+	GrantTime   time.Time
 }
 
 type InterChunkServerResponseHandler struct {
@@ -244,8 +244,17 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	// try to mutate the chunk
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	chunkName := strconv.FormatInt(request.ChunkHandle, 10)
-	file, err := os.OpenFile(chunkName+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
+	// chunkName := strconv.FormatInt(request.ChunkHandle, 10)
+	// file, err := os.OpenFile(chunkName+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
+
+	chunkName:=strconv.FormatInt(request.ChunkHandle,10)
+	log.Println(chunkName)
+	fullPath:=filepath.Join(chunkServer.ChunkDirectory,chunkName)
+	log.Println(fullPath)
+	// os.Open(filepath)
+	chunk,err:=os.OpenFile(fullPath+".chunk",os.O_CREATE|os.O_RDWR,0600)
+
+
 	if err != nil {
 		// if there is an error in opening the file then we again return an error to the primary
 		response.Status = false
@@ -263,7 +272,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	for _, mutationId := range request.MutationOrder {
 		// apply the mutations in the same sequence the primary did
 		// if there is any error anywhere then we will return an error to the primary
-		amountWritten, err := chunkServer.mutateChunk(file, mutationId, chunkOffset)
+		amountWritten, err := chunkServer.mutateChunk(chunk, mutationId, chunkOffset)
 		if err != nil {
 			response.Status = false
 			response.ErrorMessage = "error on secondary chunkServers, please try again"
@@ -276,7 +285,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		}
 		chunkOffset += amountWritten
 	}
-	file.Close()
+	chunk.Close()
 
 	// send the succeffull response back to the primary
 	requestBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
@@ -314,6 +323,8 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	// }
 	secondaryServers := requests[0].commitRequest.SecondaryServers
 
+	log.Println("HANDLING THE PRIMARY COMMIT FOR ",chunkHandle)
+
 	if !chunkServer.checkIfPrimary(chunkHandle) {
 		// for request:=range(requests){
 		// 	requests[request].conn.Close()
@@ -324,16 +335,18 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	}
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
-	fileName := strconv.FormatInt(chunkHandle, 10)
-	log.Println(fileName)
-	filepath := filepath.Join(chunkServer.ChunkDirectory, fileName)
-	log.Println(filepath)
-	// os.Open(filepath)
-	chunk, err := os.OpenFile(filepath+".chunk", os.O_CREATE|os.O_RDWR, 0600)
+
+	fileName:=chunkServer.translateChunkHandleToFileName(chunkHandle)
+	chunk,err:=os.OpenFile(fileName,os.O_CREATE|os.O_RDWR,0600)
+
+	// fileName := strconv.FormatInt(chunkHandle, 10) + ".chunk"
+	// log.Println(fileName)
+	// fullPath := filepath.Join( chunkServer.ChunkDirectory, fileName)
+	// log.Println(fullPath)
+	// chunk, err := os.OpenFile(fullPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return
 	}
-	defer chunk.Close()
 	chunkInfo, err := chunk.Stat()
 	if err != nil {
 		return
@@ -370,7 +383,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 				commitResponse: &common.PrimaryChunkCommitResponse{
 					Offset:       -1,
 					Status:       false,
-					ErrorMessage: "failed to write data",
+					ErrorMessage: "failed to write data on primary chunk server",
 				},
 			}
 			if err == common.ErrChunkFull {
@@ -395,6 +408,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		mutationOrder = append(mutationOrder, value.commitRequest.MutationId)
 		chunkOffset += amountWritten
 	}
+	chunk.Close()
 
 	// we send a leaseExtension request to the master server, this is because the lease may expire
 	// during the mutation ie. when we are sending the interChunkServerCommitRequests, and i guess this
@@ -422,7 +436,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		if err != nil {
 			for _, value := range successfullPrimaryWrites {
 				value.commitResponse.Status = false
-				value.commitResponse.ErrorMessage = "failed to write data"
+				value.commitResponse.ErrorMessage = "failed to write data on secondary chunk server "
 				value.commitResponse.Offset = -1
 			}
 		}
@@ -444,6 +458,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 func (chunkServer *ChunkServer) sendLeaseExtensionRequest(chunkHandle int64) {
 
 	request := common.MasterChunkServerLeaseRequest{
+		Server: chunkServer.address.String(),
 		ChunkHandle: chunkHandle,
 	}
 	requestBytes, _ := helper.EncodeMessage(common.MasterChunkServerLeaseRequestType, request)
@@ -475,12 +490,9 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 	chunkPresent = 1
 
 	// if we have an error during the opening of the file we return an error
-	fileName := strconv.FormatInt(request.ChunkHandle, 10)
-	log.Println(fileName)
-	filepath := filepath.Join(chunkServer.ChunkDirectory, fileName)
-	log.Println(filepath)
-	// os.Open(filepath)
-	chunk, err := os.OpenFile(filepath+".chunk", os.O_CREATE|os.O_RDWR, 0600)
+	
+	fileName:=chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
+	chunk,err:=os.OpenFile(fileName,os.O_CREATE|os.O_RDWR,0600)
 	if err != nil {
 		log.Println("ERROR ", err)
 		chunkPresent = 0
@@ -683,9 +695,9 @@ func (chunkServer *ChunkServer) handleMasterLeaseRequest(requestBodyBytes []byte
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
 	chunkServer.LeaseGrants[leaseRequest.ChunkHandle] = &LeaseGrant{
-		chunkHandle: leaseRequest.ChunkHandle,
+		ChunkHandle: leaseRequest.ChunkHandle,
 		granted:     true,
-		grantTime:   time.Now(),
+		GrantTime:   time.Now(),
 	}
 	return nil
 }
@@ -741,7 +753,7 @@ func (chunkServer *ChunkServer) initiateHandshake() error {
 // this way the master does not have to keep track of which chunk servers contain which chunks.
 // The chunk server itself serves as a source of truth regarding which chunks are present on it.
 func (chunkServer *ChunkServer) registerWithMaster() error {
-	conn, err := net.Dial("tcp", ":"+chunkServer.MasterPort)
+	conn, err := net.Dial("tcp",chunkServer.MasterPort)
 	if err != nil {
 		return err
 	}
@@ -803,7 +815,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 
 		switch messageType {
 		case common.PrimaryChunkCommitRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 15*time.Second)
 			if err != nil {
 				return
 			}

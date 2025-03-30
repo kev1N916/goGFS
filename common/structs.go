@@ -67,6 +67,7 @@ type ChunkServerToMasterHeartbeatResponse struct {
 
 type MasterChunkServerLeaseRequest struct {
 	ChunkHandle int64
+	Server string
 }
 type ClientMasterReadRequest struct {
 	Filename string 

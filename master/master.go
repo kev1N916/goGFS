@@ -56,7 +56,7 @@ type Lease struct {
 }
 
 // NewMaster creates and initializes a new Master instance
-func NewMaster(port string, inTestMode bool) (*Master, error) {
+func NewMaster(inTestMode bool) (*Master, error) {
 	node, err := snowflake.NewNode(1)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,6 @@ func NewMaster(port string, inTestMode bool) (*Master, error) {
 		// currentOpLog: opLogFile,
 		ServerList:         pq,
 		idGenerator:        node,
-		Port:               port,
 		FileMap:            make(map[string][]Chunk),
 		ChunkHandles:       make([]int64, 0),
 		ChunkServerHandler: make(map[int64][]string),
@@ -405,7 +404,7 @@ func (master *Master) Start() error {
 		// log.Panicf("master failed to recover correctly")
 	}
 	// Start master server
-	listener, err := net.Listen("tcp", ":"+master.Port)
+	listener, err := net.Listen("tcp", "")
 	if err != nil {
 		return err
 		// log.Fatalf("Failed to start master server: %v", err)
