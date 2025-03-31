@@ -70,7 +70,7 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
 			return constants.MessageType(0), nil, err
 		}
 		log.Printf("Error reading request type: %v", err)
-		return constants.MessageType(0), nil, constants.ErrReadMessageType
+		return constants.MessageType(0), nil, constants.ErrReadMessage
 	}
 	if n == 0 {
 		log.Println("No data read for message type, connection might be closing") // Log this case
@@ -84,7 +84,7 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
 	_, err =conn.Read(messageLength)
 	if err != nil {
 		log.Printf("Error reading request length: %v", err)
-		return constants.MessageType(0), nil, constants.ErrReadMessageLength
+		return constants.MessageType(0), nil, constants.ErrReadMessage
 	}
 
 	// Get the length as uint16
@@ -95,7 +95,7 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
 	_, err = io.ReadFull(conn, requestBodyBytes)
 	if err != nil {
 		log.Printf("Error reading request body (length %d): %v", length, err)
-		return constants.MessageType(0), nil, constants.ErrReadMessageBody
+		return constants.MessageType(0), nil, constants.ErrReadMessage
 	}
 
 	return constants.MessageType(messageType[0]), requestBodyBytes, nil

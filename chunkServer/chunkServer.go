@@ -29,11 +29,24 @@ type CommitResponse struct {
 	conn           net.Conn
 	commitResponse *common.PrimaryChunkCommitResponse
 }
+
+type LeaseGrant struct {
+	ChunkHandle int64
+	granted     bool
+	GrantTime   time.Time
+}
+
+type InterChunkServerResponseHandler struct {
+	responseChannel chan int
+	wg              sync.WaitGroup
+}
+
 type ChunkServer struct {
 	shutDownChan               chan struct{}
 	InTestMode                 bool
 	HeartbeatRequestsReceived  atomic.Int32
 	HeartbeatResponsesReceived atomic.Int32
+	logger                     *common.DefaultLog
 	listener                   net.Listener
 	ChunkDirectory             string
 	chunkManager               map[int64]*sync.Mutex
@@ -47,21 +60,12 @@ type ChunkServer struct {
 	LeaseGrants                map[int64]*LeaseGrant
 }
 
-type LeaseGrant struct {
-	ChunkHandle int64
-	granted     bool
-	GrantTime   time.Time
-}
-
-type InterChunkServerResponseHandler struct {
-	responseChannel chan int
-	wg              sync.WaitGroup
-}
-
 // tested
 func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 
+	logger:=common.DefaultLogger(common.ERROR)
 	chunkServer := &ChunkServer{
+		logger: logger,
 		shutDownChan:         make(chan struct{}, 1),
 		MasterPort:           masterPort,
 		ChunkHandles:         make([]int64, 0),
@@ -243,12 +247,6 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		return nil
 	}
 
-	// try to mutate the chunk
-	// chunkServer.mu.Lock()
-	// defer chunkServer.mu.Unlock()
-	// chunkName := strconv.FormatInt(request.ChunkHandle, 10)
-	// file, err := os.OpenFile(chunkName+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
-
 	chunkName := strconv.FormatInt(request.ChunkHandle, 10)
 	log.Println(chunkName)
 	fullPath := filepath.Join(chunkServer.ChunkDirectory, chunkName)
@@ -298,20 +296,6 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	return nil
 }
 
-// func (chunkServer *ChunkServer) handleChunkExceedsMaxSize(requests []CommitRequest) error {
-// 	response := common.PrimaryChunkCommitResponse{
-// 		Offset:       -1,
-// 		Status:       true,
-// 		ErrorMessage: "chunk full try again with new Chunk",
-// 	}
-
-// 	for _, value := range requests {
-// 		go chunkServer.writePrimaryChunkCommitResponse(CommitResponse{conn: value.conn, commitResponse: &response})
-// 	}
-
-// 	return nil
-// }
-
 // Client->ChunkServer Request
 // The primary first applies the mutations on its own chunk and then
 // forwards the write request to all secondary replicas. Each secondary replica applies
@@ -327,39 +311,33 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 // the mutation has written. Concurrent successful mutations
 // leave the region undefined but consistent: all clients see the
 // same data, but it may not reflect what any one mutation
-// has written. 
+// has written.
 func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requests []CommitRequest) {
-	// response := common.PrimaryChunkCommitResponse{
-	// 	Offset: 0,
-	// 	Status: true,
-	// }
+
 	secondaryServers := requests[0].commitRequest.SecondaryServers
 
 	log.Println("HANDLING THE PRIMARY COMMIT FOR ", chunkHandle)
 
 	chunkServer.mu.RLock()
-    chunkMutex, exists := chunkServer.chunkManager[chunkHandle]
+	chunkMutex, exists := chunkServer.chunkManager[chunkHandle]
 	chunkServer.mu.RUnlock()
-    
-    if !exists {
-        chunkServer.mu.Lock()
-        // Check again in case another goroutine created it while we were waiting
-        _, exists =chunkServer.chunkManager[chunkHandle]
-        if !exists {
-            chunkMutex= &sync.Mutex{}
+
+	if !exists {
+		chunkServer.mu.Lock()
+		// Check again in case another goroutine created it while we were waiting
+		_, exists = chunkServer.chunkManager[chunkHandle]
+		if !exists {
+			chunkMutex = &sync.Mutex{}
 			chunkServer.chunkManager[chunkHandle] = chunkMutex
-        }
+		}
 		chunkServer.mu.Unlock()
-    }
-    chunkMutex.Lock()
+	}
+	chunkMutex.Lock()
 	defer chunkMutex.Unlock()
 
 	if !chunkServer.checkIfPrimary(chunkHandle) {
 
 		log.Println(chunkServer.address.String() + " is not primary, so connection is going to time out")
-		// for request:=range(requests){
-		// 	requests[request].conn.Close()
-		// }
 		// i can just return in this case because the connection is going to close anyways
 		// after 20 seconds
 		return
@@ -410,7 +388,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 				},
 			}
 			if err == common.ErrChunkFull {
-				log.Println("CHUNK SERVER HAS GOT ",err)
+				log.Println("CHUNK SERVER HAS GOT ", err)
 				response.commitResponse.ErrorMessage = common.ErrChunkFull.Error()
 			}
 			unsucessfullPrimaryWrites = append(unsucessfullPrimaryWrites, response)
@@ -595,23 +573,6 @@ func (chunkServer *ChunkServer) handleClientWriteRequest(conn net.Conn, requestB
 		return err
 	}
 
-	// // Read file size
-	// sizeBuf := make([]byte, 4)
-	// _, err =conn.Read(sizeBuf)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// writeSize := binary.LittleEndian.Uint32(sizeBuf)
-	// log.Printf("Receiving file of size: %d bytes\n", writeSize)
-
-	// chunkData := make([]byte, writeSize)
-
-	// // Read the write contents from connection into the byte array
-	// _, err = io.ReadFull(conn, chunkData)
-	// if err != nil {
-	// 	return err
-	// }
 	writeResponse := common.ClientChunkServerWriteResponse{
 		Status:       true,
 		ErrorMessage: "",
@@ -666,22 +627,6 @@ func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes [
 	return nil
 }
 
-// func (chunkServer *ChunkServer) leaseRequestHandler() {
-// 	leaseRequests := make([]int64, 0)
-// 	for _, lease := range chunkServer.LeaseGrants {
-// 		if time.Now().Unix()-chunkServer.leaseUsage[lease.chunkHandle].Unix() < 60 {
-// 			leaseRequests = append(leaseRequests, lease.chunkHandle)
-// 		}
-// 	}
-
-// 	heartbeatRequest := common.MasterChunkServerHeartbeat{
-// 		LeaseExtensionRequests: leaseRequests,
-// 	}
-
-// 	heartBeatBytes, _ := helper.EncodeMessage(common.MasterChunkServerHeartbeatType, heartbeatRequest)
-// 	chunkServer.MasterConnection.Write(heartBeatBytes)
-// }
-
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
 
 	// log.Println("chunkServer " + chunkServer.ChunkDirectory + " received heartbeat response from master with chunks to delete")
@@ -699,9 +644,7 @@ func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte
 /*
 The master grants a chunklease to one of the replicas, which we call the primary. The primary picks a serial
 order for all mutations to the chunk. All replicas follow this order when applying mutations.
-
-	Thus, the global mutation order is defined first by the lease grant order chosen by the
-
+Thus, the global mutation order is defined first by the lease grant order chosen by the
 master, and within a lease by the serial numbers assigned by the primary.
 The lease mechanism is designed to minimize management overhead at the master. A lease has an initial timeout
 of 60 seconds. However, as long as the chunk is being
