@@ -405,6 +405,8 @@ func (master *Master) Start() error {
 	}
 	// Start master server
 	listener, err := net.Listen("tcp", "")
+
+	// net.ListenConfig
 	if err != nil {
 		return err
 		// log.Fatalf("Failed to start master server: %v", err)
@@ -412,7 +414,7 @@ func (master *Master) Start() error {
 	master.Listener = listener
 
 	go master.startBackgroundCheckpoint()
-	log.Println("Master server listening on :",listener.Addr().String())
+	// log.Println("Master server listening on :",listener.Addr().String())
 	startWG := sync.WaitGroup{}
 	startWG.Add(1)
 	// Main loop to accept connections from clients
@@ -436,7 +438,7 @@ func (master *Master) Start() error {
 		}
 	}()
 	startWG.Wait()
-	log.Println("connection accepting loop for master started succesfully")
+	// log.Println("connection accepting loop for master started succesfully")
 	return nil
 }
 
@@ -460,12 +462,21 @@ func (master *Master) handleCreateNewChunkRequest(conn net.Conn, messageBytes []
 	if err != nil {
 		return err
 	}
-
-	err = master.createNewChunk(newChunkRequest.Filename)
+	response:=common.ClientMasterCreateNewChunkResponse{
+		Status:true,
+	}
+	err = master.createNewChunk(newChunkRequest.Filename,newChunkRequest.LastChunkHandle)
 	if err != nil {
 		return err
 	}
-	return nil
+
+	responseBytes,err:=helper.EncodeMessage(common.ClientMasterCreateNewChunkResponseType,response)
+	if err != nil {
+		return err
+	}
+
+	_,err=conn.Write(responseBytes)
+	return err
 }
 func (master *Master) handleConnection(conn net.Conn) {
 	defer conn.Close()
@@ -475,7 +486,6 @@ func (master *Master) handleConnection(conn net.Conn) {
 		if err != nil {
 			return
 		}
-
 		// Process the request based on type
 		switch messageType {
 		case common.ClientMasterCreateNewChunkRequestType:
@@ -506,7 +516,6 @@ func (master *Master) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
-
 			// Process write request
 			err = master.handleClientMasterWriteRequest(conn, messageBytes)
 			if err != nil {

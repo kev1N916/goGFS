@@ -70,7 +70,7 @@ func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 		ChunkDirectory:       chunkDirectory,
 		chunkManager:         make(map[int64]*sync.Mutex),
 		commitRequestChannel: make(chan CommitRequest),
-		LruCache:             lrucache.NewLRUBufferCache(500),
+		LruCache:             lrucache.NewLRUBufferCache(1000),
 	}
 
 	return chunkServer
@@ -410,6 +410,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 				},
 			}
 			if err == common.ErrChunkFull {
+				log.Println("CHUNK SERVER HAS GOT ",err)
 				response.commitResponse.ErrorMessage = common.ErrChunkFull.Error()
 			}
 			unsucessfullPrimaryWrites = append(unsucessfullPrimaryWrites, response)
@@ -914,18 +915,18 @@ func (chunkServer *ChunkServer) Start() (string, error) {
 		return "", err
 	}
 	chunkServer.listener = listener
-	log.Println(" chunkServer " + chunkServer.ChunkDirectory + " started on port " + listener.Addr().String())
+	// log.Println(" chunkServer " + chunkServer.ChunkDirectory + " started on port " + listener.Addr().String())
 	addr := listener.Addr().(*net.TCPAddr)
 	chunkServer.address = addr
 
 	// Register with master server
-	log.Println(" trying to register with master")
+	// log.Println(" trying to register with master")
 	if err := chunkServer.registerWithMaster(); err != nil {
-		log.Println("registration with master failed")
+		// log.Println("registration with master failed")
 		log.Println(err)
 		return "", err // log.Panicf("Failed to register with master server: %v", err)
 	}
-	log.Println(" successfully registered with master")
+	// log.Println(" successfully registered with master")
 	go chunkServer.startCommitRequestHandler()
 	go chunkServer.handleConnection(chunkServer.MasterConnection)
 	startWG := sync.WaitGroup{}
@@ -952,6 +953,6 @@ func (chunkServer *ChunkServer) Start() (string, error) {
 		}
 	}()
 	startWG.Wait()
-	log.Println(" chunkServer " + chunkServer.ChunkDirectory + " waiting to accept connections")
+	// log.Println(" chunkServer " + chunkServer.ChunkDirectory + " waiting to accept connections")
 	return addr.String(), nil
 }

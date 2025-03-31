@@ -527,7 +527,7 @@ func TestCreateNewChunk(t *testing.T) {
 		fileName := "test-file"
 
 		// Perform chunk creation
-		err := master.createNewChunk(fileName)
+		err := master.createNewChunk(fileName,-1)
 
 		// Assertions
 		assert.NoError(t, err)
@@ -556,7 +556,7 @@ func TestCreateNewChunk(t *testing.T) {
 		fileName := "test-file"
 
 		// Perform chunk creation
-		err := master.createNewChunk(fileName)
+		err := master.createNewChunk(fileName,-1)
 
 		// Assertions
 		assert.NoError(t, err)
@@ -583,8 +583,8 @@ func TestCreateNewChunk(t *testing.T) {
 		fileName := "test-file"
 
 		// Create multiple chunks
-		err1 := master.createNewChunk(fileName)
-		err2 := master.createNewChunk(fileName)
+		err1 := master.createNewChunk(fileName,-1)
+		err2 := master.createNewChunk(fileName,-1)
 
 		// Assertions
 		assert.NoError(t, err1)
@@ -622,7 +622,7 @@ func TestCreateNewChunk(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				err := master.createNewChunk(fileName)
+				err := master.createNewChunk(fileName,-1)
 				if err != nil {
 					errChan <- err
 				}

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -360,28 +361,42 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 // Appends a new chunkHandle to the file->chunkHandle mapping on the master,
 // before we change the mapping we log the operation so that we dont lose any mutations in case of
 // a crash.
-func (master *Master) createNewChunk(fileName string) error {
+func (master *Master) createNewChunk(fileName string,lastChunkHandle int64) error {
 
-	chunk := Chunk{
-		ChunkHandle: master.generateNewChunkId(),
-		ChunkSize:   0,
-	}
+	log.Println("STARTING CREATION OF NEW CHUNK LESS GOOO")
 	op := Operation{
 		Type:        common.ClientMasterWriteRequestType,
 		File:        fileName,
 		ChunkHandle: -1,
 		NewFileName: "NULL",
 	}
-	op.ChunkHandle = chunk.ChunkHandle
+	// op.ChunkHandle = chunk.ChunkHandle
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	if !master.inTestMode {
+
+	chunksIds:=master.FileMap[fileName]
+	sz:=len(chunksIds)
+
+	previousChunkHandle:=chunksIds[sz-1].ChunkHandle
+	if(previousChunkHandle==lastChunkHandle){
+		log.Println("need to make a new chunk")
+		chunk := Chunk{
+			ChunkHandle: master.generateNewChunkId(),
+		}
+		op.ChunkHandle=chunk.ChunkHandle
+	}
+
+	if (!master.inTestMode && op.ChunkHandle!=-1) {
 		err := master.opLogger.writeToOpLog(op)
 		if err != nil {
 			return err
 		}
 	}
-	master.FileMap[fileName] = append(master.FileMap[fileName], chunk)
+
+	if (op.ChunkHandle!=-1){
+		log.Println("new chunk handle created")
+		master.FileMap[fileName] = append(master.FileMap[fileName], Chunk{ChunkHandle: op.ChunkHandle})
+	}
 	return nil
 }
 

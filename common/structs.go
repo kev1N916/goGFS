@@ -3,7 +3,7 @@ package common
 type MessageType = int
 
 const (
-	ChunkSize = 300 // Chunk Size in bytes
+	ChunkSize = 600 // Chunk Size in bytes
 	// Client-ChunkServer Read Messages
 
 	ClientChunkServerReadRequestType = iota
@@ -76,17 +76,13 @@ type ClientMasterReadRequest struct {
 
 type ClientMasterCreateNewChunkRequest struct{
 	Filename string
+	LastChunkHandle int64
 }
 
 type ClientMasterCreateNewChunkResponse struct{
-	Filename string
+	Status bool
+	ChunkId int64
 }
-
-
-// type UnserializedResponse struct {
-// 	MessageType       MessageType // Capitalized field name
-// 	ResponseBodyBytes []byte      // Capitalized field name
-// }
 
 type ClientMasterReadResponse struct {
 	ChunkHandle  int64    // Capitalized field name

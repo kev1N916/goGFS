@@ -1504,24 +1504,20 @@ func TestClientWrite_2(t *testing.T) {
 
 	err = masterServer.Start()
 	masterPort := masterServer.Listener.Addr().String()
-
 	assert.Nil(t, err)
+	log.Println(masterPort)
 
-	portToServerMap := map[string]*chunkserver.ChunkServer{}
 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
-	portToServerMap[chunkServer1port] = chunkServer1
 
 	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
-	portToServerMap[chunkServer2port] = chunkServer2
 
 	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
-	portToServerMap[chunkServer3port] = chunkServer3
 
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
@@ -1530,19 +1526,20 @@ func TestClientWrite_2(t *testing.T) {
 
 	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
 
-	writeRequests := 6
+	writeRequests := 10
 
 	var wg sync.WaitGroup
 	for i := range writeRequests {
 		testFile := "testFile" + string(rune(i-'0'))
 		sentData := append(testData, byte(i-'0'))
-		for j := range 30 {
+		for j := range 35 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				// client := client.NewClient(masterPort)
 				// assert.NotNil(t, client)
 				sentData = append(sentData, byte(j-'0'))
+				// t.Log("LENGTH OF DATA WRITTEN ",len(sentData))
 				err = client.Write(testFile, testData)
 				assert.NoError(t, err)
 			}()
@@ -1551,8 +1548,7 @@ func TestClientWrite_2(t *testing.T) {
 
 	wg.Wait()
 
-	err = masterServer.Shutdown()
-	assert.Nil(t, err)
+	// time.Sleep(3*time.Second)
 
 	err = chunkServer1.Shutdown()
 	assert.Nil(t, err)
@@ -1562,4 +1558,8 @@ func TestClientWrite_2(t *testing.T) {
 
 	err = chunkServer3.Shutdown()
 	assert.Nil(t, err)
+
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
+
 }
