@@ -3,7 +3,7 @@ package common
 type MessageType = int
 
 const (
-	ChunkSize = 400 // Chunk Size in bytes
+	ChunkSize = 300 // Chunk Size in bytes
 	// Client-ChunkServer Read Messages
 
 	ClientChunkServerReadRequestType = iota

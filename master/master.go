@@ -412,7 +412,7 @@ func (master *Master) Start() error {
 	master.Listener = listener
 
 	go master.startBackgroundCheckpoint()
-	log.Println("Master server listening on :8080")
+	log.Println("Master server listening on :",listener.Addr().String())
 	startWG := sync.WaitGroup{}
 	startWG.Add(1)
 	// Main loop to accept connections from clients
@@ -502,7 +502,6 @@ func (master *Master) handleConnection(conn net.Conn) {
 			}
 		case common.ClientMasterWriteRequestType:
 			log.Println("Received MasterWriteRequestType")
-			// Process read request
 			err = helper.AddTimeoutForTheConnection(conn, 30*time.Second)
 			if err != nil {
 				return

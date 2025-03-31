@@ -30,15 +30,16 @@ type CommitResponse struct {
 	commitResponse *common.PrimaryChunkCommitResponse
 }
 type ChunkServer struct {
-	shutDownChan chan struct{}
+	shutDownChan               chan struct{}
 	InTestMode                 bool
 	HeartbeatRequestsReceived  atomic.Int32
 	HeartbeatResponsesReceived atomic.Int32
 	listener                   net.Listener
 	ChunkDirectory             string
+	chunkManager               map[int64]*sync.Mutex
 	commitRequestChannel       chan CommitRequest
 	LruCache                   *lrucache.LRUBufferCache
-	mu                         sync.Mutex
+	mu                         sync.RWMutex
 	MasterPort                 string
 	MasterConnection           net.Conn
 	address                    *net.TCPAddr
@@ -61,14 +62,15 @@ type InterChunkServerResponseHandler struct {
 func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 
 	chunkServer := &ChunkServer{
-		shutDownChan: make(chan struct{},1),
+		shutDownChan:         make(chan struct{}, 1),
 		MasterPort:           masterPort,
 		ChunkHandles:         make([]int64, 0),
 		LeaseGrants:          make(map[int64]*LeaseGrant),
-		mu:                   sync.Mutex{},
+		mu:                   sync.RWMutex{},
 		ChunkDirectory:       chunkDirectory,
+		chunkManager:         make(map[int64]*sync.Mutex),
 		commitRequestChannel: make(chan CommitRequest),
-		LruCache:             lrucache.NewLRUBufferCache(100),
+		LruCache:             lrucache.NewLRUBufferCache(500),
 	}
 
 	return chunkServer
@@ -242,18 +244,17 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 	}
 
 	// try to mutate the chunk
-	chunkServer.mu.Lock()
-	defer chunkServer.mu.Unlock()
+	// chunkServer.mu.Lock()
+	// defer chunkServer.mu.Unlock()
 	// chunkName := strconv.FormatInt(request.ChunkHandle, 10)
 	// file, err := os.OpenFile(chunkName+".chunk", os.O_CREATE|os.O_WRONLY, 0666)
 
-	chunkName:=strconv.FormatInt(request.ChunkHandle,10)
+	chunkName := strconv.FormatInt(request.ChunkHandle, 10)
 	log.Println(chunkName)
-	fullPath:=filepath.Join(chunkServer.ChunkDirectory,chunkName)
+	fullPath := filepath.Join(chunkServer.ChunkDirectory, chunkName)
 	log.Println(fullPath)
 	// os.Open(filepath)
-	chunk,err:=os.OpenFile(fullPath+".chunk",os.O_CREATE|os.O_RDWR,0600)
-
+	chunk, err := os.OpenFile(fullPath+".chunk", os.O_CREATE|os.O_RDWR, 0600)
 
 	if err != nil {
 		// if there is an error in opening the file then we again return an error to the primary
@@ -316,6 +317,17 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 // forwards the write request to all secondary replicas. Each secondary replica applies
 // mutations in the same serial number order assigned by the primary.
 // The secondaries all reply to the primary indicating that they have completed the operation.
+// A file region is <consistent> if all clients will
+// always see the same data, regardless of which replicas they
+// read from. A region is <defined> after a file data mutation if it
+// is consistent and clients will see what the mutation writes in
+// its entirety. When a mutation succeeds without interference
+// from concurrent writers, the affected region is defined (and
+// by implication consistent): all clients will always see what
+// the mutation has written. Concurrent successful mutations
+// leave the region undefined but consistent: all clients see the
+// same data, but it may not reflect what any one mutation
+// has written. 
 func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requests []CommitRequest) {
 	// response := common.PrimaryChunkCommitResponse{
 	// 	Offset: 0,
@@ -323,9 +335,28 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	// }
 	secondaryServers := requests[0].commitRequest.SecondaryServers
 
-	log.Println("HANDLING THE PRIMARY COMMIT FOR ",chunkHandle)
+	log.Println("HANDLING THE PRIMARY COMMIT FOR ", chunkHandle)
+
+	chunkServer.mu.RLock()
+    chunkMutex, exists := chunkServer.chunkManager[chunkHandle]
+	chunkServer.mu.RUnlock()
+    
+    if !exists {
+        chunkServer.mu.Lock()
+        // Check again in case another goroutine created it while we were waiting
+        _, exists =chunkServer.chunkManager[chunkHandle]
+        if !exists {
+            chunkMutex= &sync.Mutex{}
+			chunkServer.chunkManager[chunkHandle] = chunkMutex
+        }
+		chunkServer.mu.Unlock()
+    }
+    chunkMutex.Lock()
+	defer chunkMutex.Unlock()
 
 	if !chunkServer.checkIfPrimary(chunkHandle) {
+
+		log.Println(chunkServer.address.String() + " is not primary, so connection is going to time out")
 		// for request:=range(requests){
 		// 	requests[request].conn.Close()
 		// }
@@ -333,17 +364,9 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		// after 20 seconds
 		return
 	}
-	chunkServer.mu.Lock()
-	defer chunkServer.mu.Unlock()
 
-	fileName:=chunkServer.translateChunkHandleToFileName(chunkHandle)
-	chunk,err:=os.OpenFile(fileName,os.O_CREATE|os.O_RDWR,0600)
-
-	// fileName := strconv.FormatInt(chunkHandle, 10) + ".chunk"
-	// log.Println(fileName)
-	// fullPath := filepath.Join( chunkServer.ChunkDirectory, fileName)
-	// log.Println(fullPath)
-	// chunk, err := os.OpenFile(fullPath, os.O_CREATE|os.O_RDWR, 0600)
+	fileName := chunkServer.translateChunkHandleToFileName(chunkHandle)
+	chunk, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return
 	}
@@ -458,7 +481,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 func (chunkServer *ChunkServer) sendLeaseExtensionRequest(chunkHandle int64) {
 
 	request := common.MasterChunkServerLeaseRequest{
-		Server: chunkServer.address.String(),
+		Server:      chunkServer.address.String(),
 		ChunkHandle: chunkHandle,
 	}
 	requestBytes, _ := helper.EncodeMessage(common.MasterChunkServerLeaseRequestType, request)
@@ -490,9 +513,9 @@ func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request c
 	chunkPresent = 1
 
 	// if we have an error during the opening of the file we return an error
-	
-	fileName:=chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
-	chunk,err:=os.OpenFile(fileName,os.O_CREATE|os.O_RDWR,0600)
+
+	fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
+	chunk, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		log.Println("ERROR ", err)
 		chunkPresent = 0
@@ -753,7 +776,7 @@ func (chunkServer *ChunkServer) initiateHandshake() error {
 // this way the master does not have to keep track of which chunk servers contain which chunks.
 // The chunk server itself serves as a source of truth regarding which chunks are present on it.
 func (chunkServer *ChunkServer) registerWithMaster() error {
-	conn, err := net.Dial("tcp",chunkServer.MasterPort)
+	conn, err := net.Dial("tcp", chunkServer.MasterPort)
 	if err != nil {
 		return err
 	}
@@ -815,7 +838,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 
 		switch messageType {
 		case common.PrimaryChunkCommitRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 15*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 180*time.Second)
 			if err != nil {
 				return
 			}
@@ -824,7 +847,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.InterChunkServerCommitRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 180*time.Second)
 			if err != nil {
 				return
 			}
@@ -833,7 +856,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.ClientChunkServerReadRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 25*time.Second)
 			if err != nil {
 				return
 			}
@@ -842,7 +865,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 				return
 			}
 		case common.ClientChunkServerWriteRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 180*time.Second)
 			if err != nil {
 				return
 			}
@@ -912,20 +935,20 @@ func (chunkServer *ChunkServer) Start() (string, error) {
 		startWG.Done()
 		defer listener.Close()
 		for {
-				conn, err := listener.Accept()
-				if err != nil {
-					// Check if the listener was closed
-					if opErr, ok := err.(*net.OpError); ok {
-						// Check if it's a "use of closed" error
-						if strings.Contains(opErr.Error(), "use of closed") {
-							return
-						}
+			conn, err := listener.Accept()
+			if err != nil {
+				// Check if the listener was closed
+				if opErr, ok := err.(*net.OpError); ok {
+					// Check if it's a "use of closed" error
+					if strings.Contains(opErr.Error(), "use of closed") {
+						return
 					}
-					log.Printf("Failed to accept connection: %v", err)
-					continue
 				}
-				go chunkServer.handleConnection(conn)
-			
+				log.Printf("Failed to accept connection: %v", err)
+				continue
+			}
+			go chunkServer.handleConnection(conn)
+
 		}
 	}()
 	startWG.Wait()

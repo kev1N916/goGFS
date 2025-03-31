@@ -247,7 +247,7 @@ func (client *Client) WriteToMasterServer(request common.ClientMasterWriteReques
 		return nil, err
 	}
 
-	// if the response is not of intended type reuturn an error
+	// if the response is not of intended type return an error
 	if messageType != common.ClientMasterWriteResponseType {
 		return nil, fmt.Errorf("expected response type %d but got %d", common.PrimaryChunkCommitResponseType, messageType)
 	}
@@ -454,12 +454,14 @@ func (client *Client) Write(filename string, data []byte) error {
 	// the master replies with the latest chunkHandle and also the primary and seconday servers of this chunk
 	writeResponse, err := client.WriteToMasterServer(masterWriteRequest)
 	if err != nil {
+		log.Println("failed during -> WriteToMasterServer")
 		return err
 	}
 
 	// push the data to be written to all the chunkServers which the master has returned to us
-	err = client.ReplicateChunkToAllServers(writeResponse, data)
+	err = client.ReplicateChunkDataToAllServers(writeResponse, data)
 	if err != nil {
+		log.Println("failed during -> ReplicateChunkDataToAllServers")
 		return err
 	}
 
@@ -489,10 +491,9 @@ func (client *Client) Write(filename string, data []byte) error {
 				return err
 			}
 			err = client.Write(filename, data)
-			if err != nil {
-				return err
-			}
+			return err
 		}
+		log.Println("failed during -> SendCommitRequestToPrimary")
 		return err
 	}
 	client.clientMu.Lock()
@@ -509,7 +510,7 @@ func (client *Client) Write(filename string, data []byte) error {
 // We push the data we want to write to the chunk to all the chunkServers
 // first we push it to the primary, if the write to the primary fails we stop our operation there itself,
 // if it doesnt fail then we continue to push the data to all the secondary servers.
-func (client *Client) ReplicateChunkToAllServers(writeResponse *common.ClientMasterWriteResponse, data []byte) error {
+func (client *Client) ReplicateChunkDataToAllServers(writeResponse *common.ClientMasterWriteResponse, data []byte) error {
 
 	// the initial request contains the metadata associated with the mutation, namely the mutationId and the chunkHandle
 	// upon receiving this request the chunkServer will prepare itself to read the data .

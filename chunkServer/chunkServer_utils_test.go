@@ -215,7 +215,7 @@ func TestCheckIfPrimary(t *testing.T) {
 		// Setup a ChunkServer with empty lease grants
 		server := &ChunkServer{
 			LeaseGrants: make(map[int64]*LeaseGrant),
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -237,7 +237,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
-			mu: sync.Mutex{},
+			mu:  sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -259,7 +259,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago (expired)
 				},
 			},
-			mu: sync.Mutex{},
+			mu:  sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -289,7 +289,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago
 				},
 			},
-			mu: sync.Mutex{},
+			mu:  sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -311,7 +311,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
-			mu: sync.Mutex{},
+			mu:  sync.RWMutex{},
 		}
 
 		// Call the function being tested with a different chunk handle
@@ -333,7 +333,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
-			mu: sync.Mutex{},
+			mu:  sync.RWMutex{},
 		}
 		
 		// Number of concurrent goroutines to test with
@@ -379,7 +379,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second),
 				},
 			},
-			mu: sync.Mutex{},
+			mu:  sync.RWMutex{},
 		}
 
 		// Call the function being tested

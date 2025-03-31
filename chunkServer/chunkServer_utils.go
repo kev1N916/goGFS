@@ -25,7 +25,7 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 	log.Println("started commit request handler")
 
 	const batchDuration = 2* time.Second // specifies a batch duration
-	const maxBatchSize = 100
+	const maxBatchSize = 3
 
 	for {
 		// Use a slice to accumulate the commit requests
@@ -147,8 +147,8 @@ func (chunkServer *ChunkServer) loadChunks() error {
 
 // Checks if the lease which the chunk server has on the chunk is still valid
 func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool {
-	chunkServer.mu.Lock()
-	defer chunkServer.mu.Unlock()
+	chunkServer.mu.RLock()
+	defer chunkServer.mu.RUnlock()
 	leaseGrant, isPrimary := chunkServer.LeaseGrants[chunkHandle]
 	if !isPrimary {
 		return false
@@ -165,13 +165,13 @@ func (chunkServer *ChunkServer) checkIfPrimary(chunkHandle int64) bool {
 func (chunkServer *ChunkServer) processCommitBatch(requests []CommitRequest) {
 
 	log.Printf("Processing batch of %d commit requests", len(requests))
-	chunkServer.mu.Lock()
+	// chunkServer.mu.Lock()
 	// Group requests by chunk ID for more efficient processing
 	chunkBatches := make(map[int64][]CommitRequest)
 	for _, req := range requests {
 		chunkBatches[req.commitRequest.ChunkHandle] = append(chunkBatches[req.commitRequest.ChunkHandle], req)
 	}
-	chunkServer.mu.Unlock()
+	// chunkServer.mu.Unlock()
 	// launches separate goroutines for each chunkHandle
 	for key, value := range chunkBatches {
 		go chunkServer.handleChunkPrimaryCommit(key, value)
@@ -193,6 +193,7 @@ func (chunkServer *ChunkServer) mutateChunk(file *os.File, mutationId int64, chu
 
 	data, present := chunkServer.LruCache.Get(mutationId)
 	if !present {
+		log.Println("data not present in LRU CACHE WTF HOW ")
 		return 0, errors.New("data not present in lru cache")
 	}
 

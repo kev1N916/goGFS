@@ -306,7 +306,7 @@ func (master *Master) handleChunkCreation(fileName string) (int64, error) {
 	// if the file does not exist the master creates a new one and
 	// creates a new chunk for that file
 	_, fileAlreadyExists := master.FileMap[fileName]
-	if !fileAlreadyExists {
+	if (!fileAlreadyExists || len(master.FileMap[fileName])==0) {
 		master.FileMap[fileName] = make([]Chunk, 0)
 		chunk = Chunk{
 			ChunkHandle: master.generateNewChunkId(),
