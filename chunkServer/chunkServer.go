@@ -1,15 +1,11 @@
 package chunkserver
 
 import (
-	"encoding/binary"
 	"errors"
-	"io"
 	"log"
 	"math/rand/v2"
 	"net"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,9 +59,9 @@ type ChunkServer struct {
 // tested
 func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 
-	logger:=common.DefaultLogger(common.ERROR)
+	logger := common.DefaultLogger(common.ERROR)
 	chunkServer := &ChunkServer{
-		logger: logger,
+		logger:               logger,
 		shutDownChan:         make(chan struct{}, 1),
 		MasterPort:           masterPort,
 		ChunkHandles:         make([]int64, 0),
@@ -247,12 +243,10 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		return nil
 	}
 
-	chunkName := strconv.FormatInt(request.ChunkHandle, 10)
-	log.Println(chunkName)
-	fullPath := filepath.Join(chunkServer.ChunkDirectory, chunkName)
-	log.Println(fullPath)
-	// os.Open(filepath)
-	chunk, err := os.OpenFile(fullPath+".chunk", os.O_CREATE|os.O_RDWR, 0600)
+	chunk,err:=chunkServer.openChunk(request.ChunkHandle)
+	if err!=nil{
+		return err
+	}
 
 	if err != nil {
 		// if there is an error in opening the file then we again return an error to the primary
@@ -488,59 +482,21 @@ func (chunkServer *ChunkServer) handleClientReadRequest(conn net.Conn, requestBo
 // The chunk server handles a read from the client by first checking to see if the file exists or not
 // If the file does not exist, then it returns an error to the client.
 func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request common.ClientChunkServerReadRequest) error {
-	var chunkPresent byte // flag used to detect if any error has occurred
-	chunkPresent = 1
-
-	// if we have an error during the opening of the file we return an error
-
+	
 	fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
-	chunk, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		log.Println("ERROR ", err)
-		chunkPresent = 0
-		_, err = conn.Write([]byte{chunkPresent})
-		if err != nil {
-			log.Println("ERROR IN WRITING MESSAGE TO CLIENT WHICH SAYS CHUNK IS NOT PRESENT")
-			return err
-		}
-		return nil
-	}
-	defer chunk.Close()
+	return chunkServer.transferFile(conn, fileName)
+}
 
-	fileInfo, err := chunk.Stat()
-	if err != nil {
+/* ChunkServer->ChunkServer */
+func (chunkServer *ChunkServer) handleInterChunkServerCloneRequest(conn net.Conn, messageBody []byte) error {
+
+	request,err:=helper.DecodeMessage[common.InterChunkServerCloneRequest](messageBody)
+	if err!=nil{
 		return err
 	}
-	// if the files size is 0 then also we return an error
-	if fileInfo.Size() == 0 {
-		chunkPresent = 0
-	}
-
-	// we write the flag back to the client
-	_, err = conn.Write([]byte{chunkPresent})
-	if err != nil {
-		return err
-	}
-
-	// if the flag is 0 we return
-	if chunkPresent == 0 {
-		return nil
-	}
-
-	// otherwise we first transfer the chunk size and then transfer the
-	// entire chunk using io.Copy
-	sizeBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(sizeBuf, uint32(fileInfo.Size()))
-	_, err = conn.Write(sizeBuf)
-	if err != nil {
-		return err
-	}
-
-	_, err = io.Copy(conn, chunk)
-	if err != nil {
-		return err
-	}
-	return nil
+	// if we have an error during the opening of the file we return an error
+	fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
+	return chunkServer.transferFile(conn, fileName)
 }
 
 /* ChunkServer->Client */
@@ -799,6 +755,15 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 			if err != nil {
 				return
 			}
+		case common.InterChunkServerCloneRequestType:
+			err = helper.AddTimeoutForTheConnection(conn, 180*time.Second)
+			if err != nil {
+				return
+			}
+			err = chunkServer.handleInterChunkServerCloneRequest(conn, messageBody)
+			if err != nil {
+				return
+			}
 		case common.ClientChunkServerReadRequestType:
 			err = helper.AddTimeoutForTheConnection(conn, 25*time.Second)
 			if err != nil {
@@ -829,9 +794,10 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 			// }
 		case common.MasterChunkServerLeaseRequestType:
 			err = chunkServer.handleMasterLeaseRequest(messageBody)
-			if err != nil {
-				return
-			}
+			chunkServer.logger.Errorf(err.Error())
+		case common.MasterChunkServerCloneRequestType:
+			err = chunkServer.handleMasterCloneRequest(messageBody)
+			chunkServer.logger.Errorf(err.Error())
 		default:
 			log.Println("Received unknown request type:", messageType)
 		}

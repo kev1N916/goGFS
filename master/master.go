@@ -30,8 +30,8 @@ type Master struct {
 	LeaseGrants            map[int64]*Lease
 	FileMap                map[string][]Chunk // maps file names to array of chunkIds
 	ChunkHandles           []int64            // contains all the chunkHandles of all the non-deleted files
-	ChunkServerHandler     map[int64][]string // maps chunkIds to the chunkServers which store those chunks
-	mu                     sync.Mutex
+	ChunkServerHandler     map[int64][]string // maps chunkIds to the chunkServer Ports which store those chunks
+	mu                     sync.RWMutex
 }
 
 // each Chunk contains its ChunkHandle and its size
@@ -109,7 +109,7 @@ func (master *Master) handleClientMasterReadRequest(conn net.Conn, requestBodyBy
 	readResponse := common.ClientMasterReadResponse{
 		ErrorMessage: "file not found",
 		ChunkHandle:  -1,
-		ChunkServers: make([]string, 0),
+		ChunkServers: nil,
 	}
 	chunk, chunkServers, err := master.getMetadataForFile(request.Filename, request.ChunkIndex)
 	if err != nil {
@@ -187,7 +187,7 @@ func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyB
 		// between concurrent requests
 		MutationId:            -1,
 		PrimaryChunkServer:    "",
-		SecondaryChunkServers: make([]string, 0),
+		SecondaryChunkServers:nil,
 		ErrorMessage:          "error during write request on master ",
 	}
 
@@ -330,18 +330,36 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 		return err
 	}
 	master.mu.Lock()
-	for _, chunkId := range handshake.ChunkHandles {
-		master.ChunkServerHandler[chunkId] = append(master.ChunkServerHandler[chunkId], handshake.Port)
-	}
+
+	// We create a ChunkServerConnection object for the chunkServer and append it to the list of connections
+	// The ChunkServerConnection object contains the port and the connection to the chunkServer
 	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
 	master.ChunkServerConnections = append(master.ChunkServerConnections, chunkServerConnection)
+
+	// the chunkServer includes all the chunkHandles it has in its handshake 
+	// the master appends the port of the chunkServer in the mapping from chunkHandle to chunkServers
+	for _, chunkHandle := range handshake.ChunkHandles {
+		master.ChunkServerHandler[chunkHandle] = append(master.ChunkServerHandler[chunkHandle], handshake.Port)
+	}
+
+	// Add the Server to the heap of ChunkServers
 	server := &Server{
 		Server:         handshake.Port,
 		NumberOfChunks: len(handshake.ChunkHandles),
 	}
+
+	// First check if a server with the same port is present which can happen if the server disconnects to the master
+	// and then connects again after sometime
+	for _,server:=range(*master.ServerList){
+		if server.Server==handshake.Port{
+			heap.Remove(master.ServerList,server.index)
+		}
+	}
+	// insert the server into the heap
 	heap.Push(master.ServerList, server)
 	master.mu.Unlock()
 
+	// send a successfull handshake response to the Master
 	handshakeResponse := common.MasterChunkServerHandshakeResponse{
 		Message: "Handshake successful",
 	}

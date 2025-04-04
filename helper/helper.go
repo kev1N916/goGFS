@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/involk-secure-1609/goGFS/common"
 	constants "github.com/involk-secure-1609/goGFS/common"
 )
 
@@ -20,34 +21,32 @@ func AddTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {
 	return err
 }
 
-// EncodeMessage is a generic function that encodes a struct into a byte slice with message type header
-func EncodeMessage[T any](messageType constants.MessageType, message T) ([]byte, error) {
-	// Encode the struct using gob
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	err := encoder.Encode(message)
-	if err != nil {
-		return nil, errors.New("encoding failed")
-	}
-
-	// Get encoded bytes
-	messageBytes := buf.Bytes()
-	messageLength := len(messageBytes)
-
-	// Create result byte slice with proper capacity
-	result := make([]byte, 0, 1+2+messageLength)
-
-	// Append message type
-	result = append(result, byte(messageType))
-
-	// Append message length
-	result = binary.LittleEndian.AppendUint16(result, uint16(messageLength))
-
-	// Append encoded message
-	result = append(result, messageBytes...)
-
-	return result, nil
+func EncodeMessage(messageType constants.MessageType, message interface{}) ([]byte, error) {
+    // First encode the message to determine its exact size
+    var msgBuf bytes.Buffer
+    encoder := gob.NewEncoder(&msgBuf)
+    if err := encoder.Encode(message); err != nil {
+        return nil, errors.New("encoding failed")
+    }
+    messageBytes := msgBuf.Bytes()
+    messageLength := len(messageBytes)
+    
+    // Now create the final buffer with exact known size
+    // 1 byte for type + 2 bytes for length + message length
+    result := make([]byte, 1+2+messageLength)
+    
+    // Write message type
+    result[0] = byte(messageType)
+    
+    // Write message length
+    binary.LittleEndian.PutUint16(result[1:3], uint16(messageLength))
+    
+    // Copy message bytes
+    copy(result[3:], messageBytes)
+    
+    return result, nil
 }
+
 
 // DecodeMessage is a generic function that decodes bytes into a specified struct type
 func DecodeMessage[T any](requestBodyBytes []byte) (*T, error) {
@@ -62,43 +61,38 @@ func DecodeMessage[T any](requestBodyBytes []byte) (*T, error) {
 }
 
 func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
-	messageType := make([]byte, 1)
-	n, err := conn.Read(messageType)
-	if err != nil {
-		if err == io.EOF {
-			log.Println("Connection closed by client during message type read")
-			return constants.MessageType(0), nil, err
-		}
-		log.Printf("Error reading request type: %v", err)
-		return constants.MessageType(0), nil, constants.ErrReadMessage
-	}
-	if n == 0 {
-		log.Println("No data read for message type, connection might be closing") // Log this case
-		return constants.MessageType(0), nil, io.ErrUnexpectedEOF                 // Or return a more appropriate error, maybe retry logic in caller?
-	}
-	// if ( constants.MessageType(messageType[0])==constants.ClientChunkServerWriteRequestType){
-	// 	return constants.MessageType(messageType[0]),nil,nil
-	// }
-	// Read the request length (2 bytes)
-	messageLength := make([]byte, 2)
-	_, err =conn.Read(messageLength)
-	if err != nil {
-		log.Printf("Error reading request length: %v", err)
-		return constants.MessageType(0), nil, constants.ErrReadMessage
-	}
+    // Read message type (1 byte)
+    messageType := make([]byte, 1)
+    _, err := io.ReadFull(conn, messageType)
+    if err != nil {
+        if err == io.EOF {
+            log.Println("Connection closed by client during message type read")
+            return constants.MessageType(0), nil, err
+        }
+        log.Printf("Error reading message type: %v", err)
+        return constants.MessageType(0), nil, constants.ErrReadMessage
+    }
 
-	// Get the length as uint16
-	length := binary.LittleEndian.Uint16(messageLength)
+    // Read message length (2 bytes)
+    messageLength := make([]byte, 2)
+    _, err = io.ReadFull(conn, messageLength)
+    if err != nil {
+        log.Printf("Error reading message length: %v", err)
+        return constants.MessageType(0), nil, constants.ErrReadMessage
+    }
 
-	// Read the request body
-	requestBodyBytes := make([]byte, length)
-	_, err = io.ReadFull(conn, requestBodyBytes)
-	if err != nil {
-		log.Printf("Error reading request body (length %d): %v", length, err)
-		return constants.MessageType(0), nil, constants.ErrReadMessage
-	}
+    // Get the length as uint16
+    length := binary.LittleEndian.Uint16(messageLength)
+    
+    // Only allocate the exact amount needed for the message body
+    messageBody := make([]byte, length)
+    _, err = io.ReadFull(conn, messageBody)
+    if err != nil {
+        log.Printf("Error reading message body (length %d): %v", length, err)
+        return constants.MessageType(0), nil, constants.ErrReadMessage
+    }
 
-	return constants.MessageType(messageType[0]), requestBodyBytes, nil
+    return constants.MessageType(messageType[0]), messageBody, nil
 }
 
 func OpenExistingFile(path string) (*os.File, error) {
@@ -117,4 +111,36 @@ func OpenTruncFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	return fp,err
+}
+
+// Using this to solve the error "No connection could be made because the target machine actively refused it."
+// The target machine actively refused it occasionally , it is likely because the server has a full 'backlog' .
+// Regardless of whether you can increase the server backlog , you do need retry logic in your client code, 
+// sometimes it cope with this issue; as even with a long backlog the server
+// might be receiving lots of other requests on that port at that time.
+func DialWithRetry(address string, maxRetries int) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	var lastErr error
+
+	for attempt := range maxRetries {
+		conn, err = net.Dial("tcp", address)
+		if err == nil {
+			return conn, nil // Successfully connected
+		}
+
+		lastErr = err
+		
+		log.Printf("Connection attempt %d/%d failed: %v. Retrying...",
+			attempt+1, maxRetries, err)
+
+		// Add a small delay before retrying with exponential backoff
+		// Start with 200ms, then 400ms, 800ms
+		backoffTime := time.Duration(200*(1<<attempt)) * time.Millisecond
+		time.Sleep(backoffTime)
+	}
+
+	log.Printf(lastErr.Error() + fmt.Sprintf("failed to dial master after %d attempts", maxRetries))
+	// All retries failed
+	return nil, common.ErrDialServer
 }

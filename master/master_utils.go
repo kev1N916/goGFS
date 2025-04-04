@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,10 +16,62 @@ import (
 	"github.com/involk-secure-1609/goGFS/helper"
 )
 
+func (master *Master) sendCloneRequestToChunkServer (request common.MasterChunkServerCloneRequest){
+
+	conn:=master.findChunkServerConnection(request.DestinationChunkServer)
+	if (conn==nil){
+		return
+	}
+
+	messageBytes, err := helper.EncodeMessage(common.MasterChunkServerCloneRequestType, request)
+	if err != nil {		
+		return 
+	}
+
+	_,err=conn.Write(messageBytes)
+	if err!=nil{
+		return
+	}
+
+}
+func (master *Master) cloneChunk(chunkServers []string, chunkHandle int64) {
+
+	numberOfClones := 3 - len(chunkServers)
+	if numberOfClones <= 0 {
+		return
+	}
+	cloneServers := make([]*Server, 0)
+
+	for _, server := range *master.ServerList {
+		if slices.Contains(chunkServers, server.Server) {
+			continue
+		}
+		cloneServers = append(cloneServers, server)
+	}
+
+	sourceChunkServer:=chunkServers[0]
+	if len(cloneServers) < numberOfClones {
+		return
+	}
+	for range len(cloneServers) {
+		server := cloneServers[0]
+
+		cloneRequest := common.MasterChunkServerCloneRequest{
+			ChunkHandle: chunkHandle,
+			SourceChunkServer:sourceChunkServer,
+			DestinationChunkServer: server.Server,
+		}
+
+		go master.sendCloneRequestToChunkServer(cloneRequest)
+
+	}
+
+}
+
 // tested
 func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk, []string, error) {
-	master.mu.Lock()
-	defer master.mu.Unlock()
+	master.mu.RLock()
+	defer master.mu.RUnlock()
 
 	chunkList, ok := master.FileMap[filename]
 	if !ok {
@@ -29,9 +82,15 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	}
 
 	chunk := chunkList[chunkIndex]
-	chunkServers, ok := master.ChunkServerHandler[chunk.ChunkHandle]
+	chunkHandle:=chunk.ChunkHandle
+	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
+
 	if !ok {
 		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
+	}
+
+	if len(chunkServers) < 3 {
+		go master.cloneChunk(chunkServers,chunkHandle)
 	}
 	return chunk, chunkServers, nil
 }
@@ -75,8 +134,8 @@ func (master *Master) choosePrimaryIfLeaseDoesNotExist(servers []string) (string
 	rand.Shuffle(len(servers), func(i, j int) {
 		servers[i], servers[j] = servers[j], servers[i]
 	})
-	if(len(servers)==0){
-		return "",[]string{}
+	if len(servers) == 0 {
+		return "", []string{}
 	}
 	primaryServer := servers[0] // First server after shuffling is primary
 	var secondaryServers []string
@@ -133,13 +192,14 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 //	we first check if the lease is valid, if it isnt we do the same thing when there isnt a valid lease.
 //	If the lease is valid we renew the lease and choose new secondary servers for the chunk
 func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, error) {
-	lease, doesLeaseExist := master.LeaseGrants[chunkHandle]
 	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
 	if !ok {
 		return "", nil, errors.New("chunk servers do not exist for this chunk handle")
 	}
-	// checks if there is already an existing lease
-	if !doesLeaseExist {
+	lease, doesLeaseExist := master.LeaseGrants[chunkHandle]
+
+	// checks if there is already an existing lease or if the existing lease is invalid
+	if !doesLeaseExist || !master.isLeaseValid(lease, "") {
 		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
 		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
 		if !master.inTestMode {
@@ -155,39 +215,17 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 		return primaryServer, secondaryServers, nil
 	}
 
-	// checks if the existing lease is valid
-	if master.isLeaseValid(lease, "") {
-		// if it is we renew the lease
-		master.renewLeaseGrant(lease)
-		if !master.inTestMode {
-			err := master.grantLeaseToPrimaryServer(lease.Server, chunkHandle)
-			if err != nil {
-				return "", nil, err
-			}
+	// If the existing lease is valid we first renew it
+	// and then choose the secondary servers
+	master.renewLeaseGrant(lease)
+	if !master.inTestMode {
+		err := master.grantLeaseToPrimaryServer(lease.Server, chunkHandle)
+		if err != nil {
+			return "", nil, err
 		}
-		secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.Server, chunkServers)
-		return lease.Server, secondaryServers, nil
-	} else {
-		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
-		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
-		if !master.inTestMode {
-			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
-			if err != nil {
-				return "", nil, err
-			}
-		}
-		newLease := &Lease{}
-		newLease.GrantTime = time.Now()
-		newLease.Server = primaryServer
-		if !master.inTestMode {
-			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
-			if err != nil {
-				return "", nil, err
-			}
-		}
-		master.LeaseGrants[chunkHandle] = newLease
-		return primaryServer, secondaryServers, nil
 	}
+	secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.Server, chunkServers)
+	return lease.Server, secondaryServers, nil
 }
 
 // finds the connection corresponding to a chunk server
@@ -270,16 +308,20 @@ func (master *Master) tempDeleteFile(fileName string, newName string) {
 	master.FileMap[newFileName] = chunks
 }
 
+// Called when we have to assign chunk servers to a chunkHandle for the first time
 func (master *Master) assignChunkServers(chunkHandle int64) (string, []string, error) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
 	_, chunkServerExists := master.ChunkServerHandler[chunkHandle]
 	if !chunkServerExists {
-		chosenServers:= master.chooseChunkServers()
-		if(len(chosenServers)>1){
-			master.ChunkServerHandler[chunkHandle]=chosenServers
-		}else{
-			delete(master.ChunkServerHandler,chunkHandle)
+		// chooses the chunk servers from the serverList
+		chosenServers := master.chooseChunkServers()
+		// if we have insufficent chunkServers connected to the master
+		// we return an error
+		if len(chosenServers) > 1 {
+			master.ChunkServerHandler[chunkHandle] = chosenServers
+		} else {
+			delete(master.ChunkServerHandler, chunkHandle)
 			return "", nil, errors.New("no chunk servers available")
 		}
 	}
@@ -307,7 +349,7 @@ func (master *Master) handleChunkCreation(fileName string) (int64, error) {
 	// if the file does not exist the master creates a new one and
 	// creates a new chunk for that file
 	_, fileAlreadyExists := master.FileMap[fileName]
-	if (!fileAlreadyExists || len(master.FileMap[fileName])==0) {
+	if !fileAlreadyExists || len(master.FileMap[fileName]) == 0 {
 		master.FileMap[fileName] = make([]Chunk, 0)
 		chunk = Chunk{
 			ChunkHandle: master.generateNewChunkId(),
@@ -345,15 +387,15 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 		return err
 	}
 
-	lease,ok:= master.LeaseGrants[leaseRequest.ChunkHandle]
-	if !ok{
-		newLease:=&Lease{}
-		newLease.Server=leaseRequest.Server
-		newLease.GrantTime=time.Now()
-		master.LeaseGrants[leaseRequest.ChunkHandle]=newLease
+	lease, ok := master.LeaseGrants[leaseRequest.ChunkHandle]
+	if !ok {
+		newLease := &Lease{}
+		newLease.Server = leaseRequest.Server
+		newLease.GrantTime = time.Now()
+		master.LeaseGrants[leaseRequest.ChunkHandle] = newLease
 		return nil
 	}
-	lease.GrantTime=lease.GrantTime.Add(20*time.Second)
+	lease.GrantTime = lease.GrantTime.Add(20 * time.Second)
 	return nil
 }
 
@@ -361,7 +403,7 @@ func (master *Master) handleMasterLeaseRequest(conn net.Conn, messageBytes []byt
 // Appends a new chunkHandle to the file->chunkHandle mapping on the master,
 // before we change the mapping we log the operation so that we dont lose any mutations in case of
 // a crash.
-func (master *Master) createNewChunk(fileName string,lastChunkHandle int64) error {
+func (master *Master) createNewChunk(fileName string, lastChunkHandle int64) error {
 
 	log.Println("STARTING CREATION OF NEW CHUNK LESS GOOO")
 	op := Operation{
@@ -374,26 +416,26 @@ func (master *Master) createNewChunk(fileName string,lastChunkHandle int64) erro
 	master.mu.Lock()
 	defer master.mu.Unlock()
 
-	chunksIds:=master.FileMap[fileName]
-	sz:=len(chunksIds)
+	chunksIds := master.FileMap[fileName]
+	sz := len(chunksIds)
 
-	previousChunkHandle:=chunksIds[sz-1].ChunkHandle
-	if(previousChunkHandle==lastChunkHandle){
+	previousChunkHandle := chunksIds[sz-1].ChunkHandle
+	if previousChunkHandle == lastChunkHandle {
 		log.Println("need to make a new chunk")
 		chunk := Chunk{
 			ChunkHandle: master.generateNewChunkId(),
 		}
-		op.ChunkHandle=chunk.ChunkHandle
+		op.ChunkHandle = chunk.ChunkHandle
 	}
 
-	if (!master.inTestMode && op.ChunkHandle!=-1) {
+	if !master.inTestMode && op.ChunkHandle != -1 {
 		err := master.opLogger.writeToOpLog(op)
 		if err != nil {
 			return err
 		}
 	}
 
-	if (op.ChunkHandle!=-1){
+	if op.ChunkHandle != -1 {
 		log.Println("new chunk handle created")
 		master.FileMap[fileName] = append(master.FileMap[fileName], Chunk{ChunkHandle: op.ChunkHandle})
 	}

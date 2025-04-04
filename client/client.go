@@ -15,19 +15,39 @@ import (
 
 // the client struct
 type Client struct {
-	logger *common.DefaultLog
-	WriteOffsets map[int64][]int64
-	clientMu     sync.Mutex
-	masterServer string             // contains the masterServer port
-	chunkCache   map[int64][]string // the chunk cache which is a chunkId->chunkServer mapping
+	logger         *common.DefaultLog
+	WriteOffsets   map[int64][]int64
+	clientMu       sync.Mutex
+	masterServer   string // contains the masterServer port
+	readChunkCache map[ReadChunkCacheKey]ReadChunkCacheValue
+	// writeChunkCache map[WriteChunkCacheKey]WriteChunkCacheValue
 }
 
+type ReadChunkCacheKey struct {
+	FileName   string
+	ChunkIndex int
+}
+
+type ReadChunkCacheValue struct {
+	readResponse *common.ClientMasterReadResponse
+	lastRead     time.Time
+}
+
+// type WriteChunkCacheKey struct {
+// }
+
+// type WriteChunkCacheValue struct {
+// 	readResponse *common.ClientMasterReadResponse
+// 	timeStamp  time.Time
+// }
+
 func NewClient(masterServer string) *Client {
-	logger:=common.DefaultLogger(common.ERROR)
+	logger := common.DefaultLogger(common.ERROR)
 	return &Client{
-		logger: logger,
-		WriteOffsets: make(map[int64][]int64),
-		chunkCache:   make(map[int64][]string),
+		logger:         logger,
+		WriteOffsets:   make(map[int64][]int64),
+		readChunkCache: make(map[ReadChunkCacheKey]ReadChunkCacheValue),
+		// writeChunkCache: make(map[WriteChunkCacheKey]common.ClientMasterWriteResponse),
 		masterServer: masterServer,
 	}
 }
@@ -46,7 +66,7 @@ func (client *Client) ReadFromMasterServer(readRequest common.ClientMasterReadRe
 
 	// connect to the master
 	// conn, dialErr := net.Dial("tcp", client.masterServer)
-	conn, dialErr := client.dialWithRetry(client.masterServer,3)
+	conn, dialErr := helper.DialWithRetry(client.masterServer, 3)
 	if dialErr != nil {
 		return nil, dialErr
 	}
@@ -98,13 +118,13 @@ func (client *Client) ReadFromChunkServer(chunkHandle int64, chunkServers []stri
 	for _, chunkServer := range chunkServers {
 
 		// initiate a connection with the chunkServer
-		conn, dialErr := client.dialWithRetry(chunkServer,3)
+		conn, dialErr := helper.DialWithRetry(chunkServer, 3)
 		if dialErr != nil {
 			client.logger.Infof("failed to dial chunk server: %v", dialErr)
 			continue
 		}
 		defer conn.Close() // close the connection after the request ends
-		
+
 		client.logger.Infof("successfully connected to chunkServer ", chunkServer)
 
 		// In our request we only send the chunkHandle , we could send both the chunkHandle
@@ -143,7 +163,7 @@ func (client *Client) ReadFromChunkServer(chunkHandle int64, chunkServers []stri
 			continue
 		}
 		if chunkPresent[0] == 0 {
-			client.logger.Infof("chunk with handle %d is not present on %s",chunkHandle,chunkServer)
+			client.logger.Infof("chunk with handle %d is not present on %s", chunkHandle, chunkServer)
 			conn.Close()
 			continue
 		}
@@ -177,7 +197,7 @@ func (client *Client) ReadFromChunkServer(chunkHandle int64, chunkServers []stri
 
 	}
 
-	return make([]byte, 0), common.ErrReadFromChunkServer
+	return nil, common.ErrReadFromChunkServer
 }
 
 // During a client Read the file name and the offset in the file is specified,
@@ -195,12 +215,36 @@ func (client *Client) Read(filename string, chunkIndex int) ([]byte, error) {
 		ChunkIndex: chunkIndex,
 	}
 
-	// sends the request to the master
-	readResponse, err := client.ReadFromMasterServer(masterReadRequest)
-	if err != nil {
-		return nil, err
+	readCacheKey := ReadChunkCacheKey{
+		FileName:   filename,
+		ChunkIndex: chunkIndex,
 	}
 
+	var readResponse *common.ClientMasterReadResponse
+	var err error
+	// check if the chunkServers are already cached
+	readCacheVal, ok := client.presentInReadCache(readCacheKey)
+	if !ok {
+		// if not present then we send the request to the 
+		client.logger.Infof("sending read request to master for file %s", filename)
+
+		// sends the request to the master
+		readResponse, err = client.ReadFromMasterServer(masterReadRequest)
+		if err != nil {
+			return nil, err
+		}
+
+		readCacheValue:=ReadChunkCacheValue{
+			readResponse: readResponse,
+			lastRead:     time.Now(),
+		}
+		// cache the chunkServers which are present in the response
+		client.cacheMasterReadResponse(readCacheKey, readCacheValue)
+
+	} else {
+		client.logger.Infof("using cached chunkServers for file %s", filename)
+		readResponse=readCacheVal.readResponse
+	}
 	// if the master replies with an error message then something has gone wrong
 	if readResponse.ErrorMessage != "" {
 		return nil, errors.New(readResponse.ErrorMessage)
@@ -208,16 +252,13 @@ func (client *Client) Read(filename string, chunkIndex int) ([]byte, error) {
 
 	client.logger.Infof("servers returned from master", readResponse.ChunkServers)
 
-	// cache the chunkServers which are present in the response
-	client.cacheChunkServers(readResponse.ChunkHandle, readResponse)
-
 	// read from any of the chunkServers
 	chunkData, err := client.ReadFromChunkServer(readResponse.ChunkHandle, readResponse.ChunkServers)
 	if err != nil {
 		return nil, err
 	}
 
-	client.logger.Infof("received chunk data",chunkData)
+	client.logger.Infof("received chunk data", chunkData)
 
 	return chunkData, nil
 }
@@ -235,13 +276,13 @@ func (client *Client) WriteToMasterServer(request common.ClientMasterWriteReques
 
 	// connect to the master
 
-	conn, err := client.dialWithRetry(client.masterServer, 3)
+	conn, err := helper.DialWithRetry(client.masterServer, 3)
 	if err != nil {
-		client.logger.Warningf("Failed to connect to master server at",client.masterServer)
+		client.logger.Warningf("Failed to connect to master server at", client.masterServer)
 		return nil, err
 	}
 	defer conn.Close()
-	
+
 	requestBytes, err := helper.EncodeMessage(common.ClientMasterWriteRequestType, request)
 	if err != nil {
 		return nil, common.ErrEncodeMessage
@@ -368,7 +409,7 @@ func (client *Client) WriteChunkToChunkServer(chunkServerPort string, request co
 // Final request in the entire write lifecycle which is sent to the primary ChunkServer.
 // This request is responsible for the mutation which is applied to the chunk
 func (client *Client) SendCommitRequestToPrimary(port string, writeRequestToPrimary common.PrimaryChunkCommitRequest) (int64, error) {
-	conn, err := client.dialWithRetry(port, 3)
+	conn, err := helper.DialWithRetry(port, 3)
 	if err != nil {
 		client.logger.Warningf("Failed to connect to primary chunk server")
 		return -1, err
@@ -423,10 +464,10 @@ func (client *Client) CreateNewChunkForFile(filename string, lastChunkHandle int
 	}
 
 	requestBytes, err := helper.EncodeMessage(common.ClientMasterCreateNewChunkRequestType, newChunkRequest)
-	if err!=nil{
+	if err != nil {
 		return common.ErrEncodeMessage
 	}
-	conn, err := client.dialWithRetry(client.masterServer, 3)
+	conn, err := helper.DialWithRetry(client.masterServer, 3)
 	if err != nil {
 		client.logger.Warningf("Failed to connect to master server")
 		return err
@@ -444,9 +485,7 @@ func (client *Client) CreateNewChunkForFile(filename string, lastChunkHandle int
 	if messageType != common.ClientMasterCreateNewChunkResponseType {
 		return common.ErrIntendedResponseType
 	}
-	// var responseBody common.PrimaryChunkCommitResponse
-	// decoder:=gob.NewDecoder(bytes.NewReader(messageBytes))
-	// err=decoder.Decode(&responseBody)
+
 	responseBody, err := helper.DecodeMessage[common.ClientMasterCreateNewChunkResponse](messageBytes)
 	if err != nil {
 		return common.ErrDecodeMessage
@@ -527,10 +566,10 @@ func (client *Client) Write(filename string, data []byte) error {
 	}
 
 	client.clientMu.Lock()
-	if _,ok:=client.WriteOffsets[chunkHandle];!ok{
-		client.WriteOffsets[chunkHandle]=make([]int64, 0)
+	if _, ok := client.WriteOffsets[chunkHandle]; !ok {
+		client.WriteOffsets[chunkHandle] = make([]int64, 0)
 	}
-	client.WriteOffsets[chunkHandle]=append(client.WriteOffsets[chunkHandle], writeOffset)
+	client.WriteOffsets[chunkHandle] = append(client.WriteOffsets[chunkHandle], writeOffset)
 	client.clientMu.Unlock()
 
 	return nil
@@ -572,7 +611,7 @@ func (client *Client) ReplicateChunkDataToAllServers(writeResponse *common.Clien
 // Sends a delete request to the master and then depending on the response status , the delete
 // request could have succeeded or failed.
 func (client *Client) SendDeleteRequestToMaster(deleteRequest common.ClientMasterDeleteRequest) error {
-	conn, dialErr := client.dialWithRetry(client.masterServer,3)
+	conn, dialErr := helper.DialWithRetry(client.masterServer, 3)
 	if dialErr != nil {
 		return dialErr
 	}

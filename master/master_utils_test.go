@@ -124,7 +124,7 @@ func TestGetMetadataForFile(t *testing.T) {
 				1: {"server1", "server2"},
 				2: {"server3", "server4"},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Test retrieving first chunk
@@ -141,7 +141,7 @@ func TestGetMetadataForFile(t *testing.T) {
 		master := &Master{
 			FileMap:      map[string][]Chunk{},
 			ChunkServerHandler: map[int64][]string{},
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		chunk, servers, err := master.getMetadataForFile("non-existent-file", 0)
@@ -161,7 +161,7 @@ func TestGetMetadataForFile(t *testing.T) {
 				},
 			},
 			ChunkServerHandler: map[int64][]string{},
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		chunk, servers, err := master.getMetadataForFile("existing-file", 1)
@@ -181,7 +181,7 @@ func TestGetMetadataForFile(t *testing.T) {
 				},
 			},
 			ChunkServerHandler: map[int64][]string{},
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		chunk, servers, err := master.getMetadataForFile("existing-file", 0)
@@ -202,7 +202,7 @@ func TestGetMetadataForFile(t *testing.T) {
 			ChunkServerHandler: map[int64][]string{
 				1: {"server1", "server2"},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Run multiple goroutines to test concurrent access
@@ -231,7 +231,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 				1: {"server1", "server2", "server3"},
 			},
 			LeaseGrants: map[int64]*Lease{},
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(1)
@@ -254,7 +254,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 			inTestMode:     true,
 			ChunkServerHandler:   map[int64][]string{},
 			LeaseGrants:    map[int64]*Lease{},
-			mu:             sync.Mutex{},
+			mu:             sync.RWMutex{},
 		}
 
 		primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(1)
@@ -278,7 +278,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 					GrantTime: initialGrantTime,
 				},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(1)
@@ -307,7 +307,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 					GrantTime: expiredTime,
 				},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(1)
@@ -332,7 +332,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 				1: {"server1"},
 			},
 			LeaseGrants: map[int64]*Lease{},
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(1)
@@ -349,7 +349,7 @@ func TestChoosePrimaryAndSecondary(t *testing.T) {
 				1: {"server1", "server2", "server3"},
 			},
 			LeaseGrants: map[int64]*Lease{},
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		var wg sync.WaitGroup
@@ -410,7 +410,7 @@ func TestDeleteFile(t *testing.T) {
 					{ChunkHandle: 2, ChunkSize: 2048},
 				},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Perform deletion
@@ -438,7 +438,7 @@ func TestDeleteFile(t *testing.T) {
 		master := &Master{
 			inTestMode: true,
 			FileMap:    map[string][]Chunk{},
-			mu:         sync.Mutex{},
+			mu:         sync.RWMutex{},
 		}
 
 		err := master.deleteFile("non-existent-file")
@@ -455,7 +455,7 @@ func TestDeleteFile(t *testing.T) {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		err := master.deleteFile("test-file")
@@ -473,7 +473,7 @@ func TestDeleteFile(t *testing.T) {
 					{ChunkHandle: 1, ChunkSize: 1024},
 				},
 			},
-			mu: sync.Mutex{},
+			mu: sync.RWMutex{},
 		}
 
 		var wg sync.WaitGroup
@@ -521,7 +521,7 @@ func TestCreateNewChunk(t *testing.T) {
 			inTestMode:  true,
 			idGenerator:node,
 			FileMap:     make(map[string][]Chunk),
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		fileName := "test-file"
@@ -550,7 +550,7 @@ func TestCreateNewChunk(t *testing.T) {
 			inTestMode:  true,
 			idGenerator:node,
 			FileMap:     make(map[string][]Chunk),
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		fileName := "test-file"
@@ -577,7 +577,7 @@ func TestCreateNewChunk(t *testing.T) {
 			inTestMode:  true,
 			idGenerator:node,
 			FileMap:     make(map[string][]Chunk),
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		fileName := "test-file"
@@ -605,7 +605,7 @@ func TestCreateNewChunk(t *testing.T) {
 			inTestMode:  true,
 			idGenerator: node,
 			FileMap:     make(map[string][]Chunk),
-			mu:          sync.Mutex{},
+			mu:          sync.RWMutex{},
 		}
 
 		fileName := "test-concurrent-file"
@@ -687,7 +687,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			ChunkHandles: make([]int64, 0),
 			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
-			mu:           sync.Mutex{},
+			mu:           sync.RWMutex{},
 			ServerList:   pq,
 		}
 
@@ -744,7 +744,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			FileMap:      make(map[string][]Chunk),
 			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
-			mu:           sync.Mutex{},
+			mu:           sync.RWMutex{},
 			ServerList:   pq,
 		}
 
@@ -794,7 +794,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			FileMap:      make(map[string][]Chunk),
 			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
-			mu:           sync.Mutex{},
+			mu:           sync.RWMutex{},
 			ServerList:   pq,
 		}
 
@@ -842,7 +842,7 @@ func TestHandleChunkCreation(t *testing.T) {
 	// 		idGenerator:  node,
 	// 		FileMap:      make(map[string][]Chunk),
 	// 		ChunkServerHandler: make(map[int64][]string),
-	// 		mu:           sync.Mutex{},
+	// 		mu:           sync.RWMutex{},
 	// 		ServerList:   pq,
 	// 	}
 
@@ -882,7 +882,7 @@ func TestHandleChunkCreation(t *testing.T) {
 			FileMap:      make(map[string][]Chunk),
 			ChunkServerHandler: make(map[int64][]string),
 			LeaseGrants: make(map[int64]*Lease),
-			mu:           sync.Mutex{},
+			mu:           sync.RWMutex{},
 			ServerList:   pq,
 		}
 

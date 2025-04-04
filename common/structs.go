@@ -36,6 +36,11 @@ const (
 
 	MasterChunkServerLeaseRequestType
 
+	MasterChunkServerCloneRequestType
+
+	InterChunkServerCloneRequestType
+	InterChunkServerCloneResponseType
+
 	PrimaryChunkCommitRequestType
     PrimaryChunkCommitResponseType
 
@@ -147,12 +152,27 @@ type InterChunkServerCommitRequest struct{
 	ChunkOffset int64
 	MutationOrder []int64
 }
-
-
 type InterChunkServerCommitResponse struct{
 	Status bool
 	ErrorMessage string
 }
+
+type MasterChunkServerCloneRequest struct {
+	ChunkHandle int64
+	SourceChunkServer string
+	DestinationChunkServer string
+}
+
+type InterChunkServerCloneRequest struct {
+	ChunkHandle int64
+}
+
+type InterChunkServerCloneResponse struct {
+	ChunkData []byte
+	ErrorMessage string
+}
+
+
 type ClientChunkServerWriteRequest struct {
 	MutationId int64
 	ChunkHandle int64  // Capitalized field name
