@@ -1,11 +1,12 @@
 package chunkserver
 
 import (
+	"bytes"
 	"errors"
+	"hash/crc32"
 	"log"
 	"math/rand/v2"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,7 +38,13 @@ type InterChunkServerResponseHandler struct {
 	wg              sync.WaitGroup
 }
 
+type ChunkCheckSum struct {
+	crcTable *crc32.Table
+}
+
 type ChunkServer struct {
+	CheckSums                  map[int64][]byte
+	checkSummer                *ChunkCheckSum
 	shutDownChan               chan struct{}
 	InTestMode                 bool
 	HeartbeatRequestsReceived  atomic.Int32
@@ -59,8 +66,12 @@ type ChunkServer struct {
 // tested
 func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 
+	checkSummer := &ChunkCheckSum{
+		crcTable: crc32.MakeTable(crc32.Castagnoli),
+	}
 	logger := common.DefaultLogger(common.ERROR)
 	chunkServer := &ChunkServer{
+		checkSummer:          checkSummer,
 		logger:               logger,
 		shutDownChan:         make(chan struct{}, 1),
 		MasterPort:           masterPort,
@@ -229,58 +240,67 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		Status:       true,
 		ErrorMessage: "",
 	}
+
+	errorFunc := func() error {
+		response.Status = false
+		response.ErrorMessage = "error on secondary chunkServers, please try again"
+		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
+		_, err := conn.Write(responseBytes) // write the response back to the primary
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	// if there is any error during the ecoding we returna an error to the primary saying
 	// that the write has failed.
 	request, err := helper.DecodeMessage[common.InterChunkServerCommitRequest](requestBodyBytes)
 	if err != nil {
-		response.Status = false
-		response.ErrorMessage = "error on secondary chunkServers, please try again"
-		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
-		_, err = conn.Write(responseBytes) // write the response back to the primary
-		if err != nil {
-			return err
-		}
-		return nil
 	}
 
-	chunk,err:=chunkServer.openChunk(request.ChunkHandle)
-	if err!=nil{
-		return err
-	}
-
+	chunk, err := chunkServer.openChunk(request.ChunkHandle)
 	if err != nil {
 		// if there is an error in opening the file then we again return an error to the primary
-		response.Status = false
-		response.ErrorMessage = "error on secondary chunkServers, please try again"
-		responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
-		_, err = conn.Write(responseBytes)
-		if err != nil {
-			return err
-		}
-		return nil
+		return errorFunc()
 	}
+
+	chunkBuffer, isVerified, err := chunkServer.verifyChunkCheckSum(chunk, request.ChunkHandle)
+	if err != nil || !isVerified {
+		return errorFunc()
+	}
+
+	chunkBytes := chunkBuffer.Bytes()
+	chunkLength := len(chunkBytes)
+	lastChunkIndex := chunkLength / 100
+	lastChunkBytes := chunkBytes[lastChunkIndex*100 : chunkLength]
+	lastChunkBuffer := bytes.NewBuffer(lastChunkBytes)
+	chunkServer.mu.RLock()
+	checkSumData, present := chunkServer.CheckSums[request.ChunkHandle]
+	if !present {
+		return errorFunc()
+	}
+	chunkServer.mu.RUnlock()
+	checkSumBuffer := bytes.NewBuffer(checkSumData)
 	// Get the offset from which we have to write to the chunk
 	// On an atomic append all the primary and secondary chunk servers have to append at the same offset
 	chunkOffset := request.ChunkOffset
 	for _, mutationId := range request.MutationOrder {
 		// apply the mutations in the same sequence the primary did
 		// if there is any error anywhere then we will return an error to the primary
-		amountWritten, err := chunkServer.mutateChunk(chunk, mutationId, chunkOffset)
+		amountWritten, err := chunkServer.mutateChunk(
+			chunk,request.ChunkHandle,
+			mutationId,
+			chunkOffset,
+			lastChunkBuffer,
+			checkSumBuffer)
 		if err != nil {
-			response.Status = false
-			response.ErrorMessage = "error on secondary chunkServers, please try again"
-			responseBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
-			_, err = conn.Write(responseBytes)
-			if err != nil {
-				return err
-			}
-			return nil
+			return errorFunc()
 		}
 		chunkOffset += amountWritten
 	}
 	chunk.Close()
 
-	// send the succeffull response back to the primary
+	// send the successfull response back to the primary
 	requestBytes, _ := helper.EncodeMessage(common.InterChunkServerCommitResponseType, response)
 
 	_, err = conn.Write(requestBytes)
@@ -337,17 +357,37 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		return
 	}
 
-	fileName := chunkServer.translateChunkHandleToFileName(chunkHandle)
-	chunk, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0600)
+	chunk, err := chunkServer.openChunk(chunkHandle)
 	if err != nil {
+		// if there is an error in opening the file then we again return an error to the primary
 		return
 	}
+
+	chunkBuffer, isVerified, err := chunkServer.verifyChunkCheckSum(chunk,chunkHandle)
+	if err != nil || !isVerified {
+		return 
+	}
+
+	chunkBytes := chunkBuffer.Bytes()
+	chunkLength := len(chunkBytes)
+	lastChunkIndex := chunkLength / 100
+	lastChunkBytes := chunkBytes[lastChunkIndex*100 : chunkLength]
+	lastChunkBuffer := bytes.NewBuffer(lastChunkBytes)
+	chunkServer.mu.RLock()
+	checkSumData, present := chunkServer.CheckSums[chunkHandle]
+	if !present {
+		return 
+	}
+	chunkServer.mu.RUnlock()
+	checkSumBuffer := bytes.NewBuffer(checkSumData)
+
 	chunkInfo, err := chunk.Stat()
 	if err != nil {
 		return
 	}
 
 	chunkOffset := chunkInfo.Size()
+
 	// this will be the offset which we will send to all the secondary chunkServers
 	// they have talked about the atomic record append in the paper
 	// In a record append, however, the client specifies only the data. GFS
@@ -368,7 +408,12 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 
 		// we return back the amount of data written so that we can increase our offset
 		// for the subsequent requests
-		amountWritten, err := chunkServer.mutateChunk(chunk, value.commitRequest.MutationId, chunkOffset)
+		amountWritten, err := chunkServer.mutateChunk(
+			chunk,chunkHandle,
+			value.commitRequest.MutationId,
+			chunkOffset,
+			lastChunkBuffer,
+			checkSumBuffer)
 		if err != nil {
 			// either an error occurs because the write has actually failed
 			// or an error occurs due to our check on if the append is going to exceed the max
@@ -460,7 +505,6 @@ func (chunkServer *ChunkServer) sendLeaseExtensionRequest(chunkHandle int64) {
 	requestBytes, _ := helper.EncodeMessage(common.MasterChunkServerLeaseRequestType, request)
 
 	chunkServer.MasterConnection.Write(requestBytes)
-
 }
 
 /* Client->ChunkServer */
@@ -482,21 +526,21 @@ func (chunkServer *ChunkServer) handleClientReadRequest(conn net.Conn, requestBo
 // The chunk server handles a read from the client by first checking to see if the file exists or not
 // If the file does not exist, then it returns an error to the client.
 func (chunkServer *ChunkServer) writeClientReadResponse(conn net.Conn, request common.ClientChunkServerReadRequest) error {
-	
-	fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
-	return chunkServer.transferFile(conn, fileName)
+
+	// fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle,false)
+	return chunkServer.transferFile(conn, request.ChunkHandle)
 }
 
 /* ChunkServer->ChunkServer */
 func (chunkServer *ChunkServer) handleInterChunkServerCloneRequest(conn net.Conn, messageBody []byte) error {
 
-	request,err:=helper.DecodeMessage[common.InterChunkServerCloneRequest](messageBody)
-	if err!=nil{
+	request, err := helper.DecodeMessage[common.InterChunkServerCloneRequest](messageBody)
+	if err != nil {
 		return err
 	}
 	// if we have an error during the opening of the file we return an error
-	fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle)
-	return chunkServer.transferFile(conn, fileName)
+	// fileName := chunkServer.translateChunkHandleToFileName(request.ChunkHandle,false)
+	return chunkServer.transferFile(conn, request.ChunkHandle)
 }
 
 /* ChunkServer->Client */
