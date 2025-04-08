@@ -219,8 +219,12 @@ func TestClientReadFromMaster(t *testing.T) {
 		},
 	}
 	masterServer.FileMap = testFileMap
-	testChunkServerHandler := map[int64][]string{
-		3: {":server1", ":server2", ":server3"},
+	testChunkServerHandler := map[int64]map[string]bool{
+		3: {
+			":server1":true,
+			":server2":true, 
+			":server3":true,
+		},
 	}
 	masterServer.ChunkServerHandler = testChunkServerHandler
 	client := client.NewClient(masterPort)

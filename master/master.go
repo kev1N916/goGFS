@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"log"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,9 +29,9 @@ type Master struct {
 	idGenerator            *snowflake.Node
 	Port                   string
 	LeaseGrants            map[int64]*Lease
-	FileMap                map[string][]Chunk // maps file names to array of chunkIds
-	ChunkHandles           []int64            // contains all the chunkHandles of all the non-deleted files
-	ChunkServerHandler     map[int64][]string // maps chunkIds to the chunkServer Ports which store those chunks
+	FileMap                map[string][]Chunk        // maps file names to array of chunkIds
+	ChunkHandles           []int64                   // contains all the chunkHandles of all the non-deleted files
+	ChunkServerHandler     map[int64]map[string]bool // maps chunkIds to the chunkServer Ports which store those chunks
 	mu                     sync.RWMutex
 }
 
@@ -71,7 +72,7 @@ func NewMaster(inTestMode bool) (*Master, error) {
 		idGenerator:        node,
 		FileMap:            make(map[string][]Chunk),
 		ChunkHandles:       make([]int64, 0),
-		ChunkServerHandler: make(map[int64][]string),
+		ChunkServerHandler: make(map[int64]map[string]bool),
 		LeaseGrants:        make(map[int64]*Lease),
 	}
 	opLogger, err := NewOpLogger(master)
@@ -187,7 +188,7 @@ func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyB
 		// between concurrent requests
 		MutationId:            -1,
 		PrimaryChunkServer:    "",
-		SecondaryChunkServers:nil,
+		SecondaryChunkServers: nil,
 		ErrorMessage:          "error during write request on master ",
 	}
 
@@ -336,10 +337,10 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
 	master.ChunkServerConnections = append(master.ChunkServerConnections, chunkServerConnection)
 
-	// the chunkServer includes all the chunkHandles it has in its handshake 
+	// the chunkServer includes all the chunkHandles it has in its handshake
 	// the master appends the port of the chunkServer in the mapping from chunkHandle to chunkServers
 	for _, chunkHandle := range handshake.ChunkHandles {
-		master.ChunkServerHandler[chunkHandle] = append(master.ChunkServerHandler[chunkHandle], handshake.Port)
+		master.ChunkServerHandler[chunkHandle][handshake.Port] = true
 	}
 
 	// Add the Server to the heap of ChunkServers
@@ -350,9 +351,9 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 
 	// First check if a server with the same port is present which can happen if the server disconnects to the master
 	// and then connects again after sometime
-	for _,server:=range(*master.ServerList){
-		if server.Server==handshake.Port{
-			heap.Remove(master.ServerList,server.index)
+	for _, server := range *master.ServerList {
+		if server.Server == handshake.Port {
+			heap.Remove(master.ServerList, server.index)
 		}
 	}
 	// insert the server into the heap
@@ -374,16 +375,41 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	return nil
 }
 
+func (master *Master) handleChunkServerFailure(chunkServerConnection *ChunkServerConnection) {
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	numberOfConnections := 0
+	for _, connections := range master.ChunkServerConnections {
+		if connections == chunkServerConnection {
+			index := slices.Index(master.ChunkServerConnections, chunkServerConnection)
+			master.ChunkServerConnections = slices.Delete(master.ChunkServerConnections, index, index)
+		} else if connections.Port == chunkServerConnection.Port {
+			numberOfConnections++
+		}
+	}
+	if numberOfConnections == 1 {
+		for chunkHandle, chunkServers := range master.ChunkServerHandler {
+			log.Println(chunkHandle)
+			delete(chunkServers, chunkServerConnection.Port)
+		}
+
+		for _, server := range *master.ServerList {
+			if server.Server == chunkServerConnection.Port {
+				heap.Remove(master.ServerList, server.index)
+			}
+		}
+	}
+}
 func (master *Master) startChunkServerHeartbeat(chunkServerConnection *ChunkServerConnection) {
 
-	ticker := time.NewTicker(45 * time.Second)
+	// ticker := time.NewTicker(45 * time.Second)
 	for {
-		select {
-		case <-ticker.C:
-			err := master.SendHeartBeatToChunkServer(chunkServerConnection)
-			log.Println(err)
-			ticker.Reset(45 * time.Second)
-		default:
+		// select {
+		// case <-ticker.C:
+		time.Sleep(45 * time.Second)
+		err := master.SendHeartBeatToChunkServer(chunkServerConnection)
+		if err != nil {
+			master.handleChunkServerFailure(chunkServerConnection)
 		}
 	}
 }
@@ -460,19 +486,6 @@ func (master *Master) Start() error {
 	return nil
 }
 
-// func (master *Master) writeCreateNewChunkResponse(conn net.Conn,messageBytes []byte)error{
-// 	newChunkRequest, err := helper.DecodeMessage[common.ClientMasterCreateNewChunkRequest](messageBytes)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	err=master.createNewChunk(newChunkRequest.Filename)
-// 	if err!=nil{
-// 		return err
-// 	}
-// 	return nil
-// }
-
 // Handles the creation of a new chunk for the specified file, this is sent to the master by the client
 // when the client receives the error that the chunk is going to overflow during writes
 func (master *Master) handleCreateNewChunkRequest(conn net.Conn, messageBytes []byte) error {
@@ -480,20 +493,20 @@ func (master *Master) handleCreateNewChunkRequest(conn net.Conn, messageBytes []
 	if err != nil {
 		return err
 	}
-	response:=common.ClientMasterCreateNewChunkResponse{
-		Status:true,
+	response := common.ClientMasterCreateNewChunkResponse{
+		Status: true,
 	}
-	err = master.createNewChunk(newChunkRequest.Filename,newChunkRequest.LastChunkHandle)
+	err = master.createNewChunk(newChunkRequest.Filename, newChunkRequest.LastChunkHandle)
 	if err != nil {
 		return err
 	}
 
-	responseBytes,err:=helper.EncodeMessage(common.ClientMasterCreateNewChunkResponseType,response)
+	responseBytes, err := helper.EncodeMessage(common.ClientMasterCreateNewChunkResponseType, response)
 	if err != nil {
 		return err
 	}
 
-	_,err=conn.Write(responseBytes)
+	_, err = conn.Write(responseBytes)
 	return err
 }
 func (master *Master) handleConnection(conn net.Conn) {

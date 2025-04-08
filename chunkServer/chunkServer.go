@@ -87,6 +87,46 @@ func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 	return chunkServer
 }
 
+/*
+Stale Replica Detection
+
+ After a sequence of successful mutations, the mutated file
+ region is guaranteed to be defined and contain the data writ
+ten by the last mutation. GFS achieves this by (a) applying
+ mutations to a chunkin the same order on all its replicas
+ (Section 3.1), and (b) using chunkversion numbers to detect
+ any replica that has become stale because it has missed mu
+tations while its chunkserver was down (Section 4.5). Stale
+ replicas will never be involved in a mutation or given to
+ clients asking the master for chunk locations. They are
+ garbage collected at the earliest opportunity.
+
+ 
+Chunk replicas may become stale if a chunkserver fails and misses mutations to the chunk while it is down. For
+each chunk, the master maintains a chunk version number to distinguish between up-to-date and stale replicas.
+Whenever the master grants a new lease on a chunk, it increases the chunkversion number and informs the up-to
+date replicas. 
+The master and these replicas all record the new version number in their persistent state.
+This occurs before any client is notified and therefore before it can start writing to the chunk. 
+If another replica is currently unavailable, its chunkversion number will not be advanced. 
+The master will detect that this chunkserver has a stale replica when the chunkserver restarts 
+and reports its set of chunks and their associated version numbers. If the master sees a
+version number greater than the one in its records, the master assumes that it failed when 
+granting the lease and so takes the higher version to be up-to-date.
+The master removes stale replicas in its regular garbage collection. Before that, 
+it effectively considers a stale replica not to exist at all when it replies to client requests for chunk information.
+As another safeguard, the master includes the chunkversion number when it informs clients which chunkserver 
+holds a lease on a chunk or when it instructs a chunkserver to read the chunk from another chunkserver
+in a cloning operation. 
+The client or the chunkserver verifies the version number when it performs the operation so that
+it is always accessing up-to-date data.
+
+master ->gets a write request -> before granting a new lease->does a increase chunk version number operation 
+->writes the op to log-> notifies the chosen chunk servers with up to date replicas of the new version number->
+replies to the client with the primary chunk server and secondary chunk servers  
+*/
+
+
 /* ChunkServer->ChunkServer Request */
 // Responsible for sending the commit request to a chunkServer. Uses exponential backoff with jitter.
 func (chunkServer *ChunkServer) writeCommitRequestToSingleServer(responseHandler *InterChunkServerResponseHandler, chunkServerPort string, requestBytes []byte) {
@@ -288,7 +328,7 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		// apply the mutations in the same sequence the primary did
 		// if there is any error anywhere then we will return an error to the primary
 		amountWritten, err := chunkServer.mutateChunk(
-			chunk,request.ChunkHandle,
+			chunk, request.ChunkHandle,
 			mutationId,
 			chunkOffset,
 			lastChunkBuffer,
@@ -363,9 +403,9 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		return
 	}
 
-	chunkBuffer, isVerified, err := chunkServer.verifyChunkCheckSum(chunk,chunkHandle)
+	chunkBuffer, isVerified, err := chunkServer.verifyChunkCheckSum(chunk, chunkHandle)
 	if err != nil || !isVerified {
-		return 
+		return
 	}
 
 	chunkBytes := chunkBuffer.Bytes()
@@ -376,7 +416,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	chunkServer.mu.RLock()
 	checkSumData, present := chunkServer.CheckSums[chunkHandle]
 	if !present {
-		return 
+		return
 	}
 	chunkServer.mu.RUnlock()
 	checkSumBuffer := bytes.NewBuffer(checkSumData)
@@ -409,7 +449,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		// we return back the amount of data written so that we can increase our offset
 		// for the subsequent requests
 		amountWritten, err := chunkServer.mutateChunk(
-			chunk,chunkHandle,
+			chunk, chunkHandle,
 			value.commitRequest.MutationId,
 			chunkOffset,
 			lastChunkBuffer,

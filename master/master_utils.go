@@ -85,14 +85,21 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	chunkHandle:=chunk.ChunkHandle
 	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
 
+	chunkServersList:=make([]string,0)
+
+	for server,present:=range(chunkServers){
+		if(present){
+			chunkServersList=append(chunkServersList,server)
+		}
+	}
 	if !ok {
 		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
 	}
 
 	if len(chunkServers) < 3 {
-		go master.cloneChunk(chunkServers,chunkHandle)
+		go master.cloneChunk(chunkServersList,chunkHandle)
 	}
-	return chunk, chunkServers, nil
+	return chunk, chunkServersList, nil
 }
 
 // tested indirectly
@@ -193,7 +200,16 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 //	If the lease is valid we renew the lease and choose new secondary servers for the chunk
 func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, error) {
 	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
-	if !ok {
+
+	chunkServersList:=make([]string,0)
+
+	for server,present:=range(chunkServers){
+		if(present){
+			chunkServersList=append(chunkServersList,server)
+		}
+	}
+
+	if !ok || len(chunkServersList)==0 {
 		return "", nil, errors.New("chunk servers do not exist for this chunk handle")
 	}
 	lease, doesLeaseExist := master.LeaseGrants[chunkHandle]
@@ -201,7 +217,7 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 	// checks if there is already an existing lease or if the existing lease is invalid
 	if !doesLeaseExist || !master.isLeaseValid(lease, "") {
 		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
-		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServers)
+		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServersList)
 		if !master.inTestMode {
 			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
 			if err != nil {
@@ -224,7 +240,7 @@ func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []st
 			return "", nil, err
 		}
 	}
-	secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.Server, chunkServers)
+	secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.Server, chunkServersList)
 	return lease.Server, secondaryServers, nil
 }
 
@@ -319,7 +335,9 @@ func (master *Master) assignChunkServers(chunkHandle int64) (string, []string, e
 		// if we have insufficent chunkServers connected to the master
 		// we return an error
 		if len(chosenServers) > 1 {
-			master.ChunkServerHandler[chunkHandle] = chosenServers
+			for _,server:=range(chosenServers){
+				master.ChunkServerHandler[chunkHandle][server] = true
+			}
 		} else {
 			delete(master.ChunkServerHandler, chunkHandle)
 			return "", nil, errors.New("no chunk servers available")
@@ -443,18 +461,22 @@ func (master *Master) createNewChunk(fileName string, lastChunkHandle int64) err
 }
 
 func (master *Master) startBackgroundCheckpoint() {
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop() // Stop the ticker when the function exits
+	// ticker := time.NewTicker(60 * time.Second)
+	// defer ticker.Stop() // Stop the ticker when the function exits
 
 	for {
-		select {
-		case <-ticker.C:
-			go master.buildCheckpoint()
-			ticker.Reset(60 * time.Second)
-		default:
+		
+		// case <-ticker.C:
+			time.Sleep(60*time.Second)
+			err:=master.buildCheckpoint()
+			if err!=nil{
+				log.Fatalln(err)
+			}
+		// ticker.Reset(60 * time.Second)
+	
 			// Optional: Add some non-blocking logic here
 			// to run between ticks.
-		}
+		
 	}
 }
 
