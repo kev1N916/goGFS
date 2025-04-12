@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/involk-secure-1609/goGFS/common"
-	constants "github.com/involk-secure-1609/goGFS/common"
 )
 
 func AddTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {
@@ -21,7 +20,7 @@ func AddTimeoutForTheConnection(conn net.Conn, interval time.Duration) error {
 	return err
 }
 
-func EncodeMessage(messageType constants.MessageType, message interface{}) ([]byte, error) {
+func EncodeMessage(messageType common.MessageType, message interface{}) ([]byte, error) {
     // First encode the message to determine its exact size
     var msgBuf bytes.Buffer
     encoder := gob.NewEncoder(&msgBuf)
@@ -60,17 +59,17 @@ func DecodeMessage[T any](requestBodyBytes []byte) (*T, error) {
 	return &response, nil
 }
 
-func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
+func ReadMessage(conn net.Conn) (common.MessageType, []byte, error) {
     // Read message type (1 byte)
     messageType := make([]byte, 1)
     _, err := io.ReadFull(conn, messageType)
     if err != nil {
         if err == io.EOF {
             log.Println("Connection closed by client during message type read")
-            return constants.MessageType(0), nil, err
+            return common.MessageType(0), nil, err
         }
         log.Printf("Error reading message type: %v", err)
-        return constants.MessageType(0), nil, constants.ErrReadMessage
+        return common.MessageType(0), nil, common.ErrReadMessage
     }
 
     // Read message length (2 bytes)
@@ -78,7 +77,7 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
     _, err = io.ReadFull(conn, messageLength)
     if err != nil {
         log.Printf("Error reading message length: %v", err)
-        return constants.MessageType(0), nil, constants.ErrReadMessage
+        return common.MessageType(0), nil, common.ErrReadMessage
     }
 
     // Get the length as uint16
@@ -89,10 +88,10 @@ func ReadMessage(conn net.Conn) (constants.MessageType, []byte, error) {
     _, err = io.ReadFull(conn, messageBody)
     if err != nil {
         log.Printf("Error reading message body (length %d): %v", length, err)
-        return constants.MessageType(0), nil, constants.ErrReadMessage
+        return common.MessageType(0), nil, common.ErrReadMessage
     }
 
-    return constants.MessageType(messageType[0]), messageBody, nil
+    return common.MessageType(messageType[0]), messageBody, nil
 }
 
 func OpenExistingFile(path string) (*os.File, error) {

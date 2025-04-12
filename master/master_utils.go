@@ -1,6 +1,7 @@
 package master
 
 import (
+	"container/heap"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,29 +18,29 @@ import (
 	"github.com/involk-secure-1609/goGFS/helper"
 )
 
-func (master *Master) sendCloneRequestToChunkServer (request common.MasterChunkServerCloneRequest){
+func (master *Master) sendCloneRequestToChunkServer(request common.MasterChunkServerCloneRequest) {
 
-	conn:=master.findChunkServerConnection(request.DestinationChunkServer)
-	if (conn==nil){
+	conn := master.findChunkServerConnection(request.DestinationChunkServer)
+	if conn == nil {
 		return
 	}
 
 	messageBytes, err := helper.EncodeMessage(common.MasterChunkServerCloneRequestType, request)
-	if err != nil {		
-		return 
+	if err != nil {
+		return
 	}
 
-	_,err=conn.Write(messageBytes)
-	if err!=nil{
+	_, err = conn.Write(messageBytes)
+	if err != nil {
 		return
 	}
 
 }
-func (master *Master) cloneChunk(chunkServers []string, chunkHandle int64) {
+func (master *Master) cloneChunk(chunkServers []string, chunkHandle int64) error {
 
 	numberOfClones := 3 - len(chunkServers)
 	if numberOfClones <= 0 {
-		return
+		return nil
 	}
 	cloneServers := make([]*Server, 0)
 
@@ -47,24 +49,29 @@ func (master *Master) cloneChunk(chunkServers []string, chunkHandle int64) {
 			continue
 		}
 		cloneServers = append(cloneServers, server)
+		if len(cloneServers) >= numberOfClones {
+			break
+		}
 	}
 
-	sourceChunkServer:=chunkServers[0]
+	sourceChunkServer := chunkServers[0]
 	if len(cloneServers) < numberOfClones {
-		return
+		return errors.New("chunk servers not availible")
 	}
 	for range len(cloneServers) {
 		server := cloneServers[0]
 
 		cloneRequest := common.MasterChunkServerCloneRequest{
-			ChunkHandle: chunkHandle,
-			SourceChunkServer:sourceChunkServer,
+			ChunkHandle:            chunkHandle,
+			SourceChunkServer:      sourceChunkServer,
 			DestinationChunkServer: server.Server,
 		}
 
 		go master.sendCloneRequestToChunkServer(cloneRequest)
 
 	}
+
+	return nil
 
 }
 
@@ -81,25 +88,29 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 		return Chunk{}, nil, errors.New("invalid chunkOffset")
 	}
 
-	chunk := chunkList[chunkIndex]
-	chunkHandle:=chunk.ChunkHandle
+	chunkHandle := chunkList[chunkIndex]
+	// chunkHandle := chunk.ChunkHandle
 	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
-
-	chunkServersList:=make([]string,0)
-
-	for server,present:=range(chunkServers){
-		if(present){
-			chunkServersList=append(chunkServersList,server)
-		}
-	}
 	if !ok {
 		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
 	}
 
-	if len(chunkServers) < 3 {
-		go master.cloneChunk(chunkServersList,chunkHandle)
+	chunkServersList := make([]string, 0)
+	for server, present := range chunkServers {
+		if present {
+			chunkServersList = append(chunkServersList, server)
+		}
 	}
-	return chunk, chunkServersList, nil
+	if len(chunkServers) < 3 {
+		err := master.cloneChunk(chunkServersList, chunkHandle)
+		log.Println(err)
+	}
+
+	chunk, ok := master.ChunkHandles[chunkHandle]
+	if !ok {
+		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
+	}
+	return *chunk, chunkServersList, nil
 }
 
 // tested indirectly
@@ -107,9 +118,9 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 // server list. In the paper chunk servers are chosen for clients
 // based on how close the chunk servers are to the client however in this implementation
 // that really is not possible so I have just used a min heap.
-func (master *Master) chooseChunkServers() []string {
-	// master.mu.Lock()
-	// defer master.mu.Unlock()
+func (master *Master) chooseChunkServers(chunkHandle int64) error {
+	master.mu.Lock()
+	defer master.mu.Unlock()
 	servers := make([]*Server, 0)
 	for range 3 {
 		if master.ServerList.Len() > 0 {
@@ -118,13 +129,21 @@ func (master *Master) chooseChunkServers() []string {
 		}
 	}
 
-	serverNames := make([]string, 0)
-	for i := range servers {
-		serverNames = append(serverNames, servers[i].Server)
-		servers[i].NumberOfChunks++
-		master.ServerList.Push(servers[i])
+	if len(servers) > 1 {
+		for _, server := range servers {
+			server.NumberOfChunks++
+			master.ServerList.Push(server)
+			master.ChunkServerHandler[chunkHandle][server.Server] = true
+		}
+		return nil
+	} else {
+		for _, server := range servers {
+			master.ServerList.Push(server)
+		}
+		delete(master.ChunkServerHandler, chunkHandle)
+		return errors.New("no chunk servers available")
 	}
-	return serverNames
+	return nil
 }
 
 // tested indirectly
@@ -168,8 +187,12 @@ func (master *Master) chooseSecondaryIfLeaseDoesExist(primary string, servers []
 
 // tested
 // checks if we have a valid lease
-func (master *Master) isLeaseValid(lease *Lease, server string) bool {
-	if lease == nil {
+func (master *Master) isLeaseValid(lease Lease, server string) bool {
+	// if lease == nil {
+	// 	return false
+	// }
+
+	if lease.Server == "" {
 		return false
 	}
 	if server != "" {
@@ -187,7 +210,7 @@ func (master *Master) isLeaseValid(lease *Lease, server string) bool {
 // to the lease
 func (master *Master) renewLeaseGrant(lease *Lease) {
 
-	newTime := lease.GrantTime.Add(60 * time.Second)
+	newTime := time.Now().Add(60 * time.Second)
 	lease.GrantTime = newTime
 }
 
@@ -198,54 +221,48 @@ func (master *Master) renewLeaseGrant(lease *Lease) {
 //
 //	we first check if the lease is valid, if it isnt we do the same thing when there isnt a valid lease.
 //	If the lease is valid we renew the lease and choose new secondary servers for the chunk
-func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, error) {
+func (master *Master) choosePrimaryAndSecondary(chunkHandle int64) (string, []string, bool, error) {
+
+	master.mu.RLock()
 	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
 
-	chunkServersList:=make([]string,0)
+	chunkServersList := make([]string, 0)
 
-	for server,present:=range(chunkServers){
-		if(present){
-			chunkServersList=append(chunkServersList,server)
+	for server, present := range chunkServers {
+		if present {
+			chunkServersList = append(chunkServersList, server)
 		}
 	}
 
-	if !ok || len(chunkServersList)==0 {
-		return "", nil, errors.New("chunk servers do not exist for this chunk handle")
+	if !ok || len(chunkServersList) == 0 {
+		master.mu.RUnlock()
+		return "", nil, false, errors.New("chunk servers do not exist for this chunk handle")
 	}
+
 	lease, doesLeaseExist := master.LeaseGrants[chunkHandle]
+	master.mu.RUnlock()
 
 	// checks if there is already an existing lease or if the existing lease is invalid
-	if !doesLeaseExist || !master.isLeaseValid(lease, "") {
+	if !doesLeaseExist || !master.isLeaseValid(*lease, "") {
 		// if there isnt we choose new secondary and primary servers and assign the lease to the primary
 		primaryServer, secondaryServers := master.choosePrimaryIfLeaseDoesNotExist(chunkServersList)
-		if !master.inTestMode {
-			err := master.grantLeaseToPrimaryServer(primaryServer, chunkHandle)
-			if err != nil {
-				return "", nil, err
-			}
-		}
-		newLease := &Lease{}
-		newLease.GrantTime = time.Now()
-		newLease.Server = primaryServer
-		master.LeaseGrants[chunkHandle] = newLease
-		return primaryServer, secondaryServers, nil
+		return primaryServer, secondaryServers, false, nil
 	}
 
 	// If the existing lease is valid we first renew it
 	// and then choose the secondary servers
+	master.mu.Lock()
 	master.renewLeaseGrant(lease)
-	if !master.inTestMode {
-		err := master.grantLeaseToPrimaryServer(lease.Server, chunkHandle)
-		if err != nil {
-			return "", nil, err
-		}
-	}
+	master.mu.Unlock()
+
 	secondaryServers := master.chooseSecondaryIfLeaseDoesExist(lease.Server, chunkServersList)
-	return lease.Server, secondaryServers, nil
+	return lease.Server, secondaryServers, true, nil
 }
 
 // finds the connection corresponding to a chunk server
 func (master *Master) findChunkServerConnection(server string) net.Conn {
+	master.mu.RLock()
+	defer master.mu.RUnlock()
 	for _, connection := range master.ChunkServerConnections {
 		if connection.Port == server {
 			return connection.Conn
@@ -325,34 +342,27 @@ func (master *Master) tempDeleteFile(fileName string, newName string) {
 }
 
 // Called when we have to assign chunk servers to a chunkHandle for the first time
-func (master *Master) assignChunkServers(chunkHandle int64) (string, []string, error) {
-	master.mu.Lock()
-	defer master.mu.Unlock()
+func (master *Master) assignChunkServers(chunkHandle int64) (string, []string, bool, error) {
+	master.mu.RLock()
 	_, chunkServerExists := master.ChunkServerHandler[chunkHandle]
+	master.mu.RUnlock()
 	if !chunkServerExists {
 		// chooses the chunk servers from the serverList
-		chosenServers := master.chooseChunkServers()
+		err := master.chooseChunkServers(chunkHandle)
 		// if we have insufficent chunkServers connected to the master
 		// we return an error
-		if len(chosenServers) > 1 {
-			for _,server:=range(chosenServers){
-				master.ChunkServerHandler[chunkHandle][server] = true
-			}
-		} else {
-			delete(master.ChunkServerHandler, chunkHandle)
-			return "", nil, errors.New("no chunk servers available")
-		}
+		return "", nil, false, err
 	}
 	// assign primary and secondary chunkServers
-	primaryServer, secondaryServers, err := master.choosePrimaryAndSecondary(chunkHandle)
+	primaryServer, secondaryServers, leaseValid, err := master.choosePrimaryAndSecondary(chunkHandle)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
-	return primaryServer, secondaryServers, nil
+	return primaryServer, secondaryServers, leaseValid, nil
 }
 
 // tested
-func (master *Master) handleChunkCreation(fileName string) (int64, error) {
+func (master *Master) handleChunkCreation(fileName string) (*Chunk, error) {
 	// opsToLog := make([], 0)
 	op := Operation{
 		Type:        common.ClientMasterWriteRequestType,
@@ -368,9 +378,10 @@ func (master *Master) handleChunkCreation(fileName string) (int64, error) {
 	// creates a new chunk for that file
 	_, fileAlreadyExists := master.FileMap[fileName]
 	if !fileAlreadyExists || len(master.FileMap[fileName]) == 0 {
-		master.FileMap[fileName] = make([]Chunk, 0)
+		master.FileMap[fileName] = make([]int64, 0)
 		chunk = Chunk{
-			ChunkHandle: master.generateNewChunkId(),
+			ChunkHandle:  master.generateNewChunkId(),
+			ChunkVersion: 0,
 		}
 		op.ChunkHandle = chunk.ChunkHandle
 	}
@@ -379,14 +390,16 @@ func (master *Master) handleChunkCreation(fileName string) (int64, error) {
 		if !master.inTestMode {
 			err := master.opLogger.writeToOpLog(op)
 			if err != nil {
-				return -1, err
+				return nil, err
 			}
 		}
-		master.FileMap[fileName] = append(master.FileMap[fileName], chunk)
+		master.FileMap[fileName] = append(master.FileMap[fileName], chunk.ChunkHandle)
+		master.ChunkHandles[op.ChunkHandle] = &Chunk{
+			ChunkHandle:  op.ChunkHandle,
+			ChunkVersion: 0,
+		}
 	}
-	chunkHandle := master.FileMap[fileName][len(master.FileMap[fileName])-1].ChunkHandle
-
-	return chunkHandle, nil
+	return &chunk, nil
 
 }
 
@@ -395,7 +408,7 @@ func (master *Master) handleChunkCreation(fileName string) (int64, error) {
 func (master *Master) addFileChunkMapping(file string, chunkHandle int64) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	master.FileMap[file] = append(master.FileMap[file], Chunk{ChunkHandle: chunkHandle})
+	master.FileMap[file] = append(master.FileMap[file], chunkHandle)
 
 }
 
@@ -437,11 +450,12 @@ func (master *Master) createNewChunk(fileName string, lastChunkHandle int64) err
 	chunksIds := master.FileMap[fileName]
 	sz := len(chunksIds)
 
-	previousChunkHandle := chunksIds[sz-1].ChunkHandle
+	previousChunkHandle := chunksIds[sz-1]
 	if previousChunkHandle == lastChunkHandle {
 		log.Println("need to make a new chunk")
 		chunk := Chunk{
-			ChunkHandle: master.generateNewChunkId(),
+			ChunkHandle:  master.generateNewChunkId(),
+			ChunkVersion: 0,
 		}
 		op.ChunkHandle = chunk.ChunkHandle
 	}
@@ -455,7 +469,11 @@ func (master *Master) createNewChunk(fileName string, lastChunkHandle int64) err
 
 	if op.ChunkHandle != -1 {
 		log.Println("new chunk handle created")
-		master.FileMap[fileName] = append(master.FileMap[fileName], Chunk{ChunkHandle: op.ChunkHandle})
+		master.FileMap[fileName] = append(master.FileMap[fileName], op.ChunkHandle)
+		master.ChunkHandles[op.ChunkHandle] = &Chunk{
+			ChunkHandle:  op.ChunkHandle,
+			ChunkVersion: 0,
+		}
 	}
 	return nil
 }
@@ -465,18 +483,18 @@ func (master *Master) startBackgroundCheckpoint() {
 	// defer ticker.Stop() // Stop the ticker when the function exits
 
 	for {
-		
+
 		// case <-ticker.C:
-			time.Sleep(60*time.Second)
-			err:=master.buildCheckpoint()
-			if err!=nil{
-				log.Fatalln(err)
-			}
+		time.Sleep(60 * time.Second)
+		err := master.buildCheckpoint()
+		if err != nil {
+			log.Fatalln(err)
+		}
 		// ticker.Reset(60 * time.Second)
-	
-			// Optional: Add some non-blocking logic here
-			// to run between ticks.
-		
+
+		// Optional: Add some non-blocking logic here
+		// to run between ticks.
+
 	}
 }
 
@@ -560,12 +578,12 @@ func (master *Master) readCheckpoint() error {
 		master.mu.Lock()
 		defer master.mu.Unlock()
 		// Clear existing state
-		master.FileMap = make(map[string][]Chunk)
+		master.FileMap = make(map[string][]int64)
 
 		offset := 0
 		// Decode each mapping
 		for range int(totalMappings) {
-			bytesRead, file, chunks, err := decodeFileAndChunks(checkPointData, offset)
+			bytesRead, file, chunks, err := master.decodeFileAndChunks(checkPointData, offset)
 			if err != nil {
 				err = os.Truncate("checkpoint.chk", int64(offset))
 				if err != nil {
@@ -586,11 +604,15 @@ func (master *Master) readCheckpoint() error {
 			}
 			if !isDeletedFile {
 				chunkHandles := make([]int64, 0)
-				for _, val := range chunks {
-					chunkHandles = append(chunkHandles, val.ChunkHandle)
+				for _, chunk := range chunks {
+					chunkHandles = append(chunkHandles, chunk.ChunkHandle)
+					master.ChunkHandles[chunk.ChunkHandle] = &Chunk{
+						ChunkHandle:  chunk.ChunkHandle,
+						ChunkVersion: chunk.ChunkVersion,
+					}
 				}
-				master.FileMap[file] = chunks
-				master.ChunkHandles = append(master.ChunkHandles, chunkHandles...)
+				master.FileMap[file] = chunkHandles
+				// master.ChunkHandles = append(master.ChunkHandles, chunkHandles...)
 			}
 			offset += bytesRead
 		}
@@ -615,7 +637,7 @@ func (master *Master) buildCheckpoint() error {
 	fileChunksEncoded := make([]byte, 0)
 	for file, chunks := range master.FileMap {
 		totalMappings++
-		fileBytes := encodeFileAndChunks(file, chunks)
+		fileBytes := master.encodeFileAndChunks(file, chunks)
 		fileChunksEncoded = append(fileChunksEncoded, fileBytes...)
 	}
 
@@ -660,10 +682,12 @@ func (master *Master) buildCheckpoint() error {
 }
 
 // tested
-func encodeFileAndChunks(file string, chunks []Chunk) []byte {
+func (master *Master) encodeFileAndChunks(file string, chunkHandles []int64) []byte {
+
 	// Calculate the total buffer size needed
-	// 2 bytes for file length + file bytes + 2 bytes for chunks length + 8 bytes per chunk
-	totalSize := 2 + len(file) + 2 + len(chunks)*8
+	// 2 bytes for file length + file bytes + 2 bytes for number of chunks length
+	// + 8 bytes per chunk + 8 bytes for each chunk version number
+	totalSize := 2 + len(file) + 2 + len(chunkHandles)*16
 	buffer := make([]byte, totalSize)
 
 	offset := 0
@@ -678,13 +702,20 @@ func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 	offset += len(file)
 
 	// Encode number of chunks as 16-bit number (2 bytes)
-	chunksLen := uint16(len(chunks))
+	chunksLen := uint16(len(chunkHandles))
 	binary.LittleEndian.PutUint16(buffer[offset:offset+2], chunksLen)
 	offset += 2
 
-	// Encode each 64-bit chunk
-	for _, chunk := range chunks {
-		binary.LittleEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkHandle))
+	// Encode each 64-bit chunk and the chunkVersion number
+	for _, chunkHandle := range chunkHandles {
+		binary.LittleEndian.PutUint64(buffer[offset:offset+8], uint64(chunkHandle))
+		offset += 8
+		chunk, present := master.ChunkHandles[chunkHandle]
+		if !present {
+			binary.LittleEndian.PutUint64(buffer[offset:offset+8], 0)
+		} else {
+			binary.LittleEndian.PutUint64(buffer[offset:offset+8], uint64(chunk.ChunkVersion))
+		}
 		offset += 8
 	}
 
@@ -692,7 +723,7 @@ func encodeFileAndChunks(file string, chunks []Chunk) []byte {
 }
 
 // tested
-func decodeFileAndChunks(data []byte, offset int) (int, string, []Chunk, error) {
+func (master *Master) decodeFileAndChunks(data []byte, offset int) (int, string, []*Chunk, error) {
 	// Ensure there's enough data to read file length (2 bytes)
 	if offset+2 > len(data) {
 		return 0, "", nil, errors.New("insufficient data to read file length")
@@ -726,9 +757,11 @@ func decodeFileAndChunks(data []byte, offset int) (int, string, []Chunk, error) 
 	}
 
 	// Decode chunks
-	chunks := make([]Chunk, chunksLen)
+	chunks := make([]*Chunk, chunksLen)
 	for i := range chunks {
 		chunks[i].ChunkHandle = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+		offset += 8
+		chunks[i].ChunkVersion = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
 		offset += 8
 	}
 
@@ -736,4 +769,161 @@ func decodeFileAndChunks(data []byte, offset int) (int, string, []Chunk, error) 
 	totalBytesRead := 2 + len(fileName) + 2 + len(chunks)*8
 
 	return totalBytesRead, fileName, chunks, nil
+}
+
+func (master *Master) handleChunkServerIncreaseVersionNumberResponse(responseBytes []byte) error {
+	response, err := helper.DecodeMessage[common.MasterChunkServerIncreaseVersionNumberResponse](responseBytes)
+	if err != nil {
+		return err
+	}
+
+	versionIdentifer := strconv.FormatInt(response.ChunkHandle, 10) + "#" + strconv.FormatInt(response.PreviousVersionNumber, 10)
+
+	master.mu.Lock()
+	defer master.mu.Unlock()
+
+	// Check if the synchronizer still exists
+	synchronizer, exists := master.VersionNumberSynchronizer[versionIdentifer]
+	if !exists {
+		// The synchronizer might have been removed after a timeout
+		return nil
+	}
+
+	// Safely send to the channel using select to avoid panics on closed channel
+	select {
+	case synchronizer.ErrorChan <- response.Status:
+	default:
+		log.Println("channel closed")
+	}
+
+	return nil
+}
+func (master *Master) sendIncreaseVersionNumberToChunkServers(chunk *Chunk, servers []string) error {
+
+	// master.mu.RLock()
+
+	request := common.MasterChunkServerIncreaseVersionNumberRequest{
+		ChunkHandle:           chunk.ChunkHandle,
+		PreviousVersionNumber: chunk.ChunkVersion,
+	}
+
+	versionIdentifer := strconv.FormatInt(chunk.ChunkHandle, 10) + "#" + strconv.FormatInt(chunk.ChunkVersion, 10)
+
+	master.mu.Lock()
+	synchronizer := &IncreaseVersionNumberSynchronizer{ErrorChan: make(chan bool)}
+	master.VersionNumberSynchronizer[versionIdentifer] = synchronizer
+	master.mu.Unlock()
+	requestBytes, err := helper.EncodeMessage(common.MasterChunkServerIncreaseVersionNumberRequestType, request)
+	if err != nil {
+		return err
+	}
+	go func() {
+		time.Sleep(4 * time.Second)
+		close(synchronizer.ErrorChan)
+	}()
+
+	numberOfRequests := 0
+	for _, connection := range master.ChunkServerConnections {
+		if slices.Contains(servers, connection.Port) {
+			conn := connection.Conn
+			numberOfRequests++
+			go func() {
+				_, err = conn.Write(requestBytes)
+				if err != nil {
+					select {
+					case synchronizer.ErrorChan <- false:
+					default:
+						log.Println("channel closed")
+					}
+					return
+				}
+			}()
+		}
+	}
+
+	// Collect all messages in a slice
+	var requestStatus []bool
+
+	// Read messages until the channel is closed
+	for msg := range synchronizer.ErrorChan {
+		requestStatus = append(requestStatus, msg)
+		if len(requestStatus) == numberOfRequests {
+			break
+		}
+	}
+	master.mu.Lock()
+	delete(master.VersionNumberSynchronizer, versionIdentifer)
+	master.mu.Unlock()
+
+	IVNsuccess := true
+
+	if len(requestStatus) < numberOfRequests {
+		IVNsuccess = false
+	}
+
+	for _, status := range requestStatus {
+		if !status {
+			IVNsuccess = false
+		}
+	}
+
+	if IVNsuccess {
+		master.mu.Lock()
+		op := Operation{
+			Type:             common.MasterChunkServerIncreaseVersionNumberRequestType,
+			NewVersionNumber: chunk.ChunkVersion + 1,
+			ChunkHandle:      chunk.ChunkHandle,
+		}
+		err = master.opLogger.writeToOpLog(op)
+		if err != nil {
+			return err
+		}
+		chunk.ChunkVersion++
+		master.mu.Unlock()
+	}
+	return nil
+}
+
+func (master *Master) setChunkVersionNumber(chunkHandle int64, versionNumber int64) {
+	chunk, present := master.ChunkHandles[chunkHandle]
+	if !present {
+		master.ChunkHandles[chunkHandle] = &Chunk{
+			ChunkHandle:  chunkHandle,
+			ChunkVersion: versionNumber,
+		}
+		return
+	}
+	chunk.ChunkVersion = versionNumber
+}
+
+func (master *Master) handleChunkServerIsNotUpToDate(port string, chunkHandle int64) {
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	delete(master.ChunkServerHandler[chunkHandle],port)
+}
+
+func (master *Master) handleChunkServerFailure(chunkServerConnection *ChunkServerConnection) {
+	master.mu.Lock()
+	defer master.mu.Unlock()
+	numberOfConnections := 0
+	for _, connections := range master.ChunkServerConnections {
+		if connections == chunkServerConnection {
+			index := slices.Index(master.ChunkServerConnections, chunkServerConnection)
+			master.ChunkServerConnections = slices.Delete(master.ChunkServerConnections, index, index)
+		} else if connections.Port == chunkServerConnection.Port {
+			numberOfConnections++
+		}
+	}
+	if numberOfConnections == 1 {
+		for chunkHandle, chunkServers := range master.ChunkServerHandler {
+			log.Println(chunkHandle)
+			delete(chunkServers, chunkServerConnection.Port)
+		}
+
+		for _, server := range *master.ServerList {
+			if server.Server == chunkServerConnection.Port {
+				heap.Remove(master.ServerList, server.index)
+			}
+		}
+	}
 }

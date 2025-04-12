@@ -38,6 +38,9 @@ const (
 
 	MasterChunkServerCloneRequestType
 
+	MasterChunkServerIncreaseVersionNumberRequestType
+	MasterChunkServerIncreaseVersionNumberResponseType
+
 	InterChunkServerCloneRequestType
 	InterChunkServerCloneResponseType
 
@@ -57,19 +60,23 @@ type MasterChunkServerHandshakeResponse struct {
 	Message string
 }
 
+type Chunk struct {
+	ChunkVersion int64
+	ChunkHandle int64
+}
 type MasterToChunkServerHeartbeatRequest struct {
 	Heartbeat string
 }
 
 type MasterToChunkServerHeartbeatResponse struct {
 	ChunksToBeDeleted []int64
+	ChunksToBeCloned []int64
 	ErrorMessage string
 }
 
 type ChunkServerToMasterHeartbeatResponse struct {
-	ChunksPresent []int64
+	ChunksPresent []Chunk
 }
-
 type MasterChunkServerLeaseRequest struct {
 	ChunkHandle int64
 	Server string
@@ -92,6 +99,7 @@ type ClientMasterCreateNewChunkResponse struct{
 type ClientMasterReadResponse struct {
 	ChunkHandle  int64    // Capitalized field name
 	ChunkServers []string // Capitalized field name
+	ChunkVersion int64
 	ErrorMessage string
 }
 
@@ -119,6 +127,7 @@ type ClientMasterWriteResponse struct {
 
 type ClientChunkServerReadRequest struct {
 	ChunkHandle int64 // Capitalized field name
+	ChunkVersion int64 // Capitalized field name
 	// OffsetStart int64 // Capitalized field name
 	// OffsetEnd   int64 // Capitalized field name
 }
@@ -161,6 +170,17 @@ type MasterChunkServerCloneRequest struct {
 	ChunkHandle int64
 	SourceChunkServer string
 	DestinationChunkServer string
+}
+
+type MasterChunkServerIncreaseVersionNumberRequest struct {
+	PreviousVersionNumber int64
+	ChunkHandle int64
+}
+
+type MasterChunkServerIncreaseVersionNumberResponse struct {
+	Status bool
+	ChunkHandle int64
+	PreviousVersionNumber int64
 }
 
 type InterChunkServerCloneRequest struct {

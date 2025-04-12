@@ -504,3 +504,42 @@ func (chunkServer *ChunkServer) mutateChunkCheckSum(chunkHandle int64) error {
 	}
 	return checkSumFile.Sync()
 }
+
+
+func (chunkServer *ChunkServer) handleMasterIncreaseVersionNumberRequest(requestBodyBytes []byte){
+
+	request,err:=helper.DecodeMessage[common.MasterChunkServerIncreaseVersionNumberRequest](requestBodyBytes)
+	if err!=nil{
+		return 
+	}
+
+	chunkServer.mu.Lock()
+	defer chunkServer.mu.Unlock()
+
+	currentVersionNumber,present:=chunkServer.ChunkVersionNumbers[request.ChunkHandle]
+	if !present{
+		chunkServer.ChunkVersionNumbers[request.ChunkHandle]=0
+	}
+
+	response:=common.MasterChunkServerIncreaseVersionNumberResponse{
+		Status: true,
+		ChunkHandle: request.ChunkHandle,
+		PreviousVersionNumber: request.PreviousVersionNumber,
+	}
+
+	if(currentVersionNumber==request.PreviousVersionNumber){
+		chunkServer.ChunkVersionNumbers[request.ChunkHandle]++
+	} else{
+		response.Status=false
+	}
+
+	responseBytes,err:=helper.EncodeMessage(common.MasterChunkServerIncreaseVersionNumberResponseType,response)
+	if err!=nil{
+		return 
+	}
+
+	_,err=chunkServer.MasterConnection.Write(responseBytes)
+	if err!=nil{
+		return 
+	}
+}

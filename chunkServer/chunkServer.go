@@ -42,6 +42,10 @@ type ChunkCheckSum struct {
 	crcTable *crc32.Table
 }
 
+type Chunk struct{
+	mu *sync.Mutex
+	versionNumber atomic.Int64
+}
 type ChunkServer struct {
 	CheckSums                  map[int64][]byte
 	checkSummer                *ChunkCheckSum
@@ -60,6 +64,7 @@ type ChunkServer struct {
 	MasterConnection           net.Conn
 	address                    *net.TCPAddr
 	ChunkHandles               []int64
+	ChunkVersionNumbers        map[int64]int64
 	LeaseGrants                map[int64]*LeaseGrant
 }
 
@@ -101,7 +106,7 @@ tations while its chunkserver was down (Section 4.5). Stale
  clients asking the master for chunk locations. They are
  garbage collected at the earliest opportunity.
 
- 
+
 Chunk replicas may become stale if a chunkserver fails and misses mutations to the chunk while it is down. For
 each chunk, the master maintains a chunk version number to distinguish between up-to-date and stale replicas.
 Whenever the master grants a new lease on a chunk, it increases the chunkversion number and informs the up-to
@@ -381,7 +386,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 		// Check again in case another goroutine created it while we were waiting
 		_, exists = chunkServer.chunkManager[chunkHandle]
 		if !exists {
-			chunkMutex = &sync.Mutex{}
+			chunkMutex:=&sync.Mutex{}
 			chunkServer.chunkManager[chunkHandle] = chunkMutex
 		}
 		chunkServer.mu.Unlock()
@@ -647,9 +652,22 @@ func (chunkServer *ChunkServer) handleMasterHeartbeatRequest(requestBodyBytes []
 		chunkServer.HeartbeatRequestsReceived.Add(1)
 	}
 	chunkServer.mu.Lock()
-	heartBeatResponse := common.ChunkServerToMasterHeartbeatResponse{
-		ChunksPresent: chunkServer.ChunkHandles,
+
+	chunks:=make([]common.Chunk,0)
+
+	for _,chunkHandle:=range(chunkServer.ChunkHandles){
+		chunkVersionNumber,present:=chunkServer.ChunkVersionNumbers[chunkHandle]
+		if !present {
+			chunks=append(chunks, common.Chunk{ChunkHandle: chunkHandle,ChunkVersion: 0})
+		} else{
+			chunks=append(chunks, common.Chunk{ChunkHandle: chunkHandle,ChunkVersion: chunkVersionNumber})
+		}
 	}
+
+	heartBeatResponse := common.ChunkServerToMasterHeartbeatResponse{
+		ChunksPresent: chunks,
+	}
+
 	chunkServer.mu.Unlock()
 	responseBodyBytes, err := helper.EncodeMessage(common.ChunkServerToMasterHeartbeatResponseType, heartBeatResponse)
 	if err != nil {
@@ -876,6 +894,8 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 			// if err!=nil{
 			// 	return
 			// }
+		case common.MasterChunkServerIncreaseVersionNumberRequestType:
+			chunkServer.handleMasterIncreaseVersionNumberRequest(messageBody)
 		case common.MasterChunkServerLeaseRequestType:
 			err = chunkServer.handleMasterLeaseRequest(messageBody)
 			chunkServer.logger.Errorf(err.Error())

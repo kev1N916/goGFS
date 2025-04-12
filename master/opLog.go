@@ -20,10 +20,12 @@ type OpLogger struct {
 	currentOpLog *os.File
 }
 type Operation struct {
-	Type        int
-	File        string
-	ChunkHandle int64
-	NewFileName     string
+	Type             int
+	File             string
+	ChunkHandle      int64
+	NewFileName      string
+	OldVersionNumber int64
+	NewVersionNumber int64
 }
 
 // Has to be 5 bytes.  The value can never change, ever, anyway.
@@ -31,12 +33,12 @@ var magicText = [3]byte{'G', 'F', 'S'}
 
 const (
 	// OpLogFileName is the file name for the opLog file.
-	OpLogFileName = "OPLOG"+".opLog"
+	OpLogFileName = "OPLOG" + ".opLog"
 	// OpLofRewriteName is the file name for the rewrite opLog file.
-	OpLogRewriteFileName = "REWRITE-OPLOG"+".opLog"
+	OpLogRewriteFileName = "REWRITE-OPLOG" + ".opLog"
 )
 
-// tested 
+// tested
 func NewOpLogger(master *Master) (*OpLogger, error) {
 	opLogger := &OpLogger{
 		master: master,
@@ -47,16 +49,16 @@ func NewOpLogger(master *Master) (*OpLogger, error) {
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
-		opLogFile,err=opLogger.rewriteOpLog()
-		if err!=nil{
-			return nil,err
+		opLogFile, err = opLogger.rewriteOpLog()
+		if err != nil {
+			return nil, err
 		}
 	}
-	opLogger.currentOpLog=opLogFile
+	opLogger.currentOpLog = opLogFile
 	return opLogger, nil
 }
 
-// tested 
+// tested
 func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 	opLogRewriteFile, err := helper.OpenTruncFile(OpLogRewriteFileName)
 	if err != nil {
@@ -95,7 +97,7 @@ func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 	return fp, err
 }
 
-// tested 
+// tested
 func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	// master.opLogMu.Lock()
 	// defer master.opLogMu.Unlock()
@@ -106,6 +108,8 @@ func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "Create", op.File, op.ChunkHandle, op.NewFileName)
 	case common.ClientMasterDeleteRequestType:
 		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "TempDelete", op.File, op.ChunkHandle, op.NewFileName)
+	case common.MasterChunkServerIncreaseVersionNumberRequestType:
+		logLine = fmt.Sprintf("%s:%s:%d:%d\n", "SetVersionNumber",op.File, op.ChunkHandle, op.NewVersionNumber)
 	default:
 		return errors.New("operation type not defined correctly")
 	}
@@ -115,22 +119,22 @@ func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	}
 	// Ensure data is written to disk
 	return opLogger.currentOpLog.Sync()
-	
+
 }
 
-// tested 
+// tested
 func (opLogger *OpLogger) readOpLog() error {
-	
-	magicBuf:=make([]byte,3)
-	_,err:=opLogger.currentOpLog.Seek(0,io.SeekStart)
-	if err!=nil{
+
+	magicBuf := make([]byte, 3)
+	_, err := opLogger.currentOpLog.Seek(0, io.SeekStart)
+	if err != nil {
 		return err
 	}
-	_,err=opLogger.currentOpLog.Read(magicBuf)
-	if err!=nil{
+	_, err = opLogger.currentOpLog.Read(magicBuf)
+	if err != nil {
 		return err
 	}
-	if(!bytes.Equal(magicBuf[0:3], magicText[:])){
+	if !bytes.Equal(magicBuf[0:3], magicText[:]) {
 		return common.ErrBadMagic
 	}
 	// master.opLogMu.Lock()
@@ -143,15 +147,21 @@ func (opLogger *OpLogger) readOpLog() error {
 		parts := strings.Split(line, ":")
 		if len(parts) == 4 {
 			command := parts[0]
-			fileName := parts[1]
-			chunkHandle, _ := strconv.ParseInt(parts[2], 10, 64)
-			newFileName := parts[3]
-
 			switch command {
 			case "Create":
+				fileName := parts[1]
+				chunkHandle, _ := strconv.ParseInt(parts[2], 10, 64)
+				// newFileName := parts[3]
 				opLogger.master.addFileChunkMapping(fileName, chunkHandle)
 			case "TempDelete":
+				fileName := parts[1]
+				newFileName := parts[3]
 				opLogger.master.tempDeleteFile(fileName, newFileName)
+			case "IncreaseVersionNumber":
+				chunkHandle, _ := strconv.ParseInt(parts[2], 10, 64)
+				newVersionNumber, _ := strconv.ParseInt(parts[3], 10, 64)
+
+				opLogger.master.setChunkVersionNumber(chunkHandle,newVersionNumber)
 			default:
 				return errors.New("undefined commands")
 			}
@@ -162,7 +172,7 @@ func (opLogger *OpLogger) readOpLog() error {
 	return nil
 }
 
-// tested 
+// tested
 // Helper function to switch to a new operation log file
 func (opLogger *OpLogger) switchOpLog() error {
 	// master.opLogMu.Lock()
@@ -173,8 +183,8 @@ func (opLogger *OpLogger) switchOpLog() error {
 		opLogger.currentOpLog.Close()
 	}
 
-	fp,err:=opLogger.rewriteOpLog()
-	if err!=nil{
+	fp, err := opLogger.rewriteOpLog()
+	if err != nil {
 		return err
 	}
 

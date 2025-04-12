@@ -209,16 +209,16 @@ func TestClientReadFromMaster(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	testFileMap := map[string][]master.Chunk{
-		"test_file_1": {
-			{ChunkHandle: 2}, {ChunkHandle: 3}, {ChunkHandle: 0},
-		},
-		"test_file_2": {
-			{ChunkHandle: 2432}, {ChunkHandle: 31321}, {ChunkHandle: 320},
-			{ChunkHandle: 311}, {ChunkHandle: 32},
-		},
-	}
-	masterServer.FileMap = testFileMap
+	// testFileMap := map[string][]*master.Chunk{
+	// 	"test_file_1": {
+	// 		{ChunkHandle: 2}, {ChunkHandle: 3}, {ChunkHandle: 0},
+	// 	},
+	// 	"test_file_2": {
+	// 		{ChunkHandle: 2432}, {ChunkHandle: 31321}, {ChunkHandle: 320},
+	// 		{ChunkHandle: 311}, {ChunkHandle: 32},
+	// 	},
+	// }
+	// masterServer.FileMap = testFileMap
 	testChunkServerHandler := map[int64]map[string]bool{
 		3: {
 			":server1":true,
@@ -314,16 +314,16 @@ func TestClientReadWorkflow(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	testFileMap := map[string][]master.Chunk{
-		"test_file_1": {
-			{ChunkHandle: 1}, {ChunkHandle: 2}, {ChunkHandle: 0},
-		},
-		"test_file_2": {
-			{ChunkHandle: 3}, {ChunkHandle: 4}, {ChunkHandle: 5},
-			{ChunkHandle: 7}, {ChunkHandle: 6},
-		},
-	}
-	masterServer.FileMap = testFileMap
+	// testFileMap := map[string][]*master.Chunk{
+	// 	"test_file_1": {
+	// 		{ChunkHandle: 1}, {ChunkHandle: 2}, {ChunkHandle: 0},
+	// 	},
+	// 	"test_file_2": {
+	// 		{ChunkHandle: 3}, {ChunkHandle: 4}, {ChunkHandle: 5},
+	// 		{ChunkHandle: 7}, {ChunkHandle: 6},
+	// 	},
+	// }
+	// masterServer.FileMap = testFileMap
 
 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
 	chunkServer1port, err := chunkServer1.Start()

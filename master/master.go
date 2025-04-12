@@ -24,13 +24,14 @@ type Master struct {
 	ChunkServerConnections []*ChunkServerConnection
 	opLogger               *OpLogger
 	LastCheckpointTime     time.Time
+	VersionNumberSynchronizer map[string]*IncreaseVersionNumberSynchronizer
 	LastLogSwitchTime      time.Time
 	ServerList             *ServerList
 	idGenerator            *snowflake.Node
 	Port                   string
 	LeaseGrants            map[int64]*Lease
-	FileMap                map[string][]Chunk        // maps file names to array of chunkIds
-	ChunkHandles           []int64                   // contains all the chunkHandles of all the non-deleted files
+	FileMap                map[string][]int64        // maps file names to array of chunkIds
+	ChunkHandles           map[int64]*Chunk          // contains all the chunkHandles of all the non-deleted files
 	ChunkServerHandler     map[int64]map[string]bool // maps chunkIds to the chunkServer Ports which store those chunks
 	mu                     sync.RWMutex
 }
@@ -38,13 +39,18 @@ type Master struct {
 // each Chunk contains its ChunkHandle and its size
 // currently we are not using the ChunkSize for anything
 type Chunk struct {
-	ChunkHandle int64
-	ChunkSize   int64
+	ChunkHandle  int64
+	ChunkVersion int64
 }
 
+type IncreaseVersionNumberSynchronizer struct {
+	ErrorChan chan bool
+}
 type ChunkServerConnection struct {
 	Port string
 	Conn net.Conn
+	Wg sync.WaitGroup
+	ErrorChan chan int
 }
 
 // The lease struct is used to designate the primary ChunkServer during write Requests
@@ -70,10 +76,11 @@ func NewMaster(inTestMode bool) (*Master, error) {
 		// currentOpLog: opLogFile,
 		ServerList:         pq,
 		idGenerator:        node,
-		FileMap:            make(map[string][]Chunk),
-		ChunkHandles:       make([]int64, 0),
+		FileMap:            make(map[string][]int64),
+		ChunkHandles:       make(map[int64]*Chunk),
 		ChunkServerHandler: make(map[int64]map[string]bool),
 		LeaseGrants:        make(map[int64]*Lease),
+		VersionNumberSynchronizer:make(map[string]*IncreaseVersionNumberSynchronizer),
 	}
 	opLogger, err := NewOpLogger(master)
 	if err != nil {
@@ -110,6 +117,7 @@ func (master *Master) handleClientMasterReadRequest(conn net.Conn, requestBodyBy
 	readResponse := common.ClientMasterReadResponse{
 		ErrorMessage: "file not found",
 		ChunkHandle:  -1,
+		ChunkVersion: -1,
 		ChunkServers: nil,
 	}
 	chunk, chunkServers, err := master.getMetadataForFile(request.Filename, request.ChunkIndex)
@@ -121,6 +129,7 @@ func (master *Master) handleClientMasterReadRequest(conn net.Conn, requestBodyBy
 	readResponse.ChunkHandle = chunk.ChunkHandle
 	readResponse.ChunkServers = chunkServers
 	readResponse.ErrorMessage = ""
+	readResponse.ChunkVersion = chunk.ChunkVersion
 	err = master.writeMasterReadResponse(conn, readResponse)
 	if err != nil {
 		return err
@@ -194,17 +203,34 @@ func (master *Master) handleClientMasterWriteRequest(conn net.Conn, requestBodyB
 
 	// if an error occurs while we write to the opLog then a chunkHandle will not be created
 	// and this will return an error, if that happens then we shudnt be assigning chunkServers
-	chunkHandle, err := master.handleChunkCreation(request.Filename)
+	chunk, err := master.handleChunkCreation(request.Filename)
 	// primaryServer,secondaryServers,err:=master.assignChunkServers(chunkHandle)
 	if err == nil {
-		primaryServer, secondaryServers, err := master.assignChunkServers(chunkHandle)
+		primaryServer, secondaryServers, preExistingLeaseExists, err := master.assignChunkServers(chunk.ChunkHandle)
 		if err == nil {
-			writeResponse = common.ClientMasterWriteResponse{
-				ChunkHandle:           chunkHandle,
-				MutationId:            master.idGenerator.Generate().Int64(),
-				PrimaryChunkServer:    primaryServer,
-				SecondaryChunkServers: secondaryServers,
-				ErrorMessage:          "",
+			if !master.inTestMode {
+				servers := slices.Concat([]string{primaryServer}, secondaryServers)
+				err = master.sendIncreaseVersionNumberToChunkServers(chunk, servers)
+				if err == nil {
+					leaseErr := master.grantLeaseToPrimaryServer(primaryServer, chunk.ChunkHandle)
+					if leaseErr == nil {
+						writeResponse = common.ClientMasterWriteResponse{
+							ChunkHandle:           chunk.ChunkHandle,
+							MutationId:            master.idGenerator.Generate().Int64(),
+							PrimaryChunkServer:    primaryServer,
+							SecondaryChunkServers: secondaryServers,
+							ErrorMessage:          "",
+						}
+					}
+				}
+			}
+			if !preExistingLeaseExists {
+				master.mu.Lock()
+				newLease := &Lease{}
+				newLease.GrantTime = time.Now()
+				newLease.Server = primaryServer
+				master.LeaseGrants[chunk.ChunkHandle] = newLease
+				master.mu.Unlock()
 			}
 		} else {
 			writeResponse.ErrorMessage = "no chunk servers available"
@@ -279,23 +305,33 @@ is free to delete its replicas of such chunks.
 func (master *Master) isChunkDeleted(chunkHandle int64) bool {
 
 	for _, val := range master.ChunkHandles {
-		if val == chunkHandle {
+		if chunkHandle == val.ChunkHandle {
 			return false
 		}
 	}
 	return true
 }
-func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestBodyBytes []byte) error {
+
+func (master *Master) verifyChunkVersion(chunk common.Chunk) bool {
+	return false
+}
+func (master *Master) handleChunkServerHeartbeatResponse(connection *ChunkServerConnection, requestBodyBytes []byte) error {
 	heartBeatResponse, err := helper.DecodeMessage[common.ChunkServerToMasterHeartbeatResponse](requestBodyBytes)
 	if err != nil {
 		return err
 	}
 	master.mu.Lock()
 	chunksToBeDeleted := make([]int64, 0)
-	for _, chunkHandle := range heartBeatResponse.ChunksPresent {
-		isChunkDeleted := master.isChunkDeleted(chunkHandle)
+	for _, chunk := range heartBeatResponse.ChunksPresent {
+		isChunkDeleted := master.isChunkDeleted(chunk.ChunkHandle)
+		isChunkVersionOutdated := master.verifyChunkVersion(chunk)
 		if isChunkDeleted {
-			chunksToBeDeleted = append(chunksToBeDeleted, chunkHandle)
+			chunksToBeDeleted = append(chunksToBeDeleted, chunk.ChunkHandle)
+		}
+		if isChunkVersionOutdated{
+			delete(master.ChunkServerHandler[chunk.ChunkHandle],connection.Port)
+		}else{
+			master.ChunkServerHandler[chunk.ChunkHandle][connection.Port]=true
 		}
 	}
 	master.mu.Unlock()
@@ -304,7 +340,7 @@ func (master *Master) handleChunkServerHeartbeatResponse(conn net.Conn, requestB
 		ChunksToBeDeleted: chunksToBeDeleted,
 		ErrorMessage:      "",
 	}
-	return master.writeHeartbeatResponse(conn, heartbeatResponse)
+	return master.writeHeartbeatResponse(connection.Conn, heartbeatResponse)
 
 }
 
@@ -324,7 +360,7 @@ func (master *Master) writeHeartbeatResponse(conn net.Conn, response common.Mast
 }
 
 // Handles the initial chunkServer master handshake request
-func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBodyBytes []byte) error {
+func (master *Master) handleChunkServerMasterHandshake(connection *ChunkServerConnection, requestBodyBytes []byte) error {
 	handshake, err := helper.DecodeMessage[common.MasterChunkServerHandshakeRequest](requestBodyBytes)
 	if err != nil {
 		log.Println("Encoding failed:", err)
@@ -334,8 +370,8 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 
 	// We create a ChunkServerConnection object for the chunkServer and append it to the list of connections
 	// The ChunkServerConnection object contains the port and the connection to the chunkServer
-	chunkServerConnection := &ChunkServerConnection{Port: handshake.Port, Conn: conn}
-	master.ChunkServerConnections = append(master.ChunkServerConnections, chunkServerConnection)
+	connection.Port=handshake.Port
+	master.ChunkServerConnections = append(master.ChunkServerConnections, connection)
 
 	// the chunkServer includes all the chunkHandles it has in its handshake
 	// the master appends the port of the chunkServer in the mapping from chunkHandle to chunkServers
@@ -364,42 +400,17 @@ func (master *Master) handleChunkServerMasterHandshake(conn net.Conn, requestBod
 	handshakeResponse := common.MasterChunkServerHandshakeResponse{
 		Message: "Handshake successful",
 	}
-	err = master.writeHandshakeResponse(conn, handshakeResponse)
+	err = master.writeHandshakeResponse(connection.Conn, handshakeResponse)
 	if err != nil {
 		return err
 	}
 
 	if !master.inTestMode {
-		go master.startChunkServerHeartbeat(chunkServerConnection)
+		go master.startChunkServerHeartbeat(connection)
 	}
 	return nil
 }
 
-func (master *Master) handleChunkServerFailure(chunkServerConnection *ChunkServerConnection) {
-	master.mu.Lock()
-	defer master.mu.Unlock()
-	numberOfConnections := 0
-	for _, connections := range master.ChunkServerConnections {
-		if connections == chunkServerConnection {
-			index := slices.Index(master.ChunkServerConnections, chunkServerConnection)
-			master.ChunkServerConnections = slices.Delete(master.ChunkServerConnections, index, index)
-		} else if connections.Port == chunkServerConnection.Port {
-			numberOfConnections++
-		}
-	}
-	if numberOfConnections == 1 {
-		for chunkHandle, chunkServers := range master.ChunkServerHandler {
-			log.Println(chunkHandle)
-			delete(chunkServers, chunkServerConnection.Port)
-		}
-
-		for _, server := range *master.ServerList {
-			if server.Server == chunkServerConnection.Port {
-				heap.Remove(master.ServerList, server.index)
-			}
-		}
-	}
-}
 func (master *Master) startChunkServerHeartbeat(chunkServerConnection *ChunkServerConnection) {
 
 	// ticker := time.NewTicker(45 * time.Second)
@@ -478,7 +489,11 @@ func (master *Master) Start() error {
 				log.Printf("Failed to accept connection: %v", err)
 				continue
 			}
-			go master.handleConnection(conn)
+			chunkServerConnection:=&ChunkServerConnection{
+				Conn: conn,
+				Wg: sync.WaitGroup{},
+			}
+			go master.handleConnection(chunkServerConnection)
 		}
 	}()
 	startWG.Wait()
@@ -509,7 +524,8 @@ func (master *Master) handleCreateNewChunkRequest(conn net.Conn, messageBytes []
 	_, err = conn.Write(responseBytes)
 	return err
 }
-func (master *Master) handleConnection(conn net.Conn) {
+func (master *Master) handleConnection(connection *ChunkServerConnection) {
+	conn:=connection.Conn
 	defer conn.Close()
 
 	for {
@@ -565,14 +581,20 @@ func (master *Master) handleConnection(conn net.Conn) {
 		case common.MasterChunkServerHandshakeRequestType:
 			log.Println("Received MasterChunkServerHandshakeType")
 			// Process handshake
-			err = master.handleChunkServerMasterHandshake(conn, messageBytes)
+			err = master.handleChunkServerMasterHandshake(connection, messageBytes)
+			if err != nil {
+				return
+			}
+		case common.MasterChunkServerIncreaseVersionNumberResponseType:
+			log.Println("Received MasterChunkServerIncreaseVersionNumberResponseType")
+			err = master.handleChunkServerIncreaseVersionNumberResponse(messageBytes)
 			if err != nil {
 				return
 			}
 		case common.ChunkServerToMasterHeartbeatResponseType:
 			log.Println("Received MasterChunkServerHeartbeatType")
 			// Process heartbeat
-			err = master.handleChunkServerHeartbeatResponse(conn, messageBytes)
+			err = master.handleChunkServerHeartbeatResponse(connection, messageBytes)
 			if err != nil {
 				return
 			}

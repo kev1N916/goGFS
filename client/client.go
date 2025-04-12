@@ -113,9 +113,9 @@ func (client *Client) ReadFromMasterServer(readRequest common.ClientMasterReadRe
 // response from the master and then issue readRequests to the chunkServers.
 // When the request succeeds we break from our loop.
 //
-func (client *Client) ReadFromChunkServer(chunkHandle int64, chunkServers []string) ([]byte, error) {
+func (client *Client) ReadFromChunkServer(readResponse *common.ClientMasterReadResponse) ([]byte, error) {
 	// iterate through all the chunkServers
-	for _, chunkServer := range chunkServers {
+	for _, chunkServer := range readResponse.ChunkServers {
 
 		// initiate a connection with the chunkServer
 		conn, dialErr := helper.DialWithRetry(chunkServer, 3)
@@ -134,7 +134,8 @@ func (client *Client) ReadFromChunkServer(chunkHandle int64, chunkServers []stri
 		// the ChunkSize according to the official GFS paper is 64mb
 		// but that is too large for a toy implementation.
 		chunkServerReadRequest := common.ClientChunkServerReadRequest{
-			ChunkHandle: chunkHandle,
+			ChunkHandle: readResponse.ChunkHandle,
+			ChunkVersion:readResponse.ChunkVersion,
 		}
 
 		// we serialize the message
@@ -163,7 +164,7 @@ func (client *Client) ReadFromChunkServer(chunkHandle int64, chunkServers []stri
 			continue
 		}
 		if chunkPresent[0] == 0 {
-			client.logger.Infof("chunk with handle %d is not present on %s", chunkHandle, chunkServer)
+			client.logger.Infof("chunk with handle %d is not present on %s", readResponse.ChunkHandle, chunkServer)
 			conn.Close()
 			continue
 		}
@@ -253,7 +254,7 @@ func (client *Client) Read(filename string, chunkIndex int) ([]byte, error) {
 	client.logger.Infof("servers returned from master", readResponse.ChunkServers)
 
 	// read from any of the chunkServers
-	chunkData, err := client.ReadFromChunkServer(readResponse.ChunkHandle, readResponse.ChunkServers)
+	chunkData, err := client.ReadFromChunkServer(readResponse)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +276,6 @@ func (client *Client) Read(filename string, chunkIndex int) ([]byte, error) {
 func (client *Client) WriteToMasterServer(request common.ClientMasterWriteRequest) (*common.ClientMasterWriteResponse, error) {
 
 	// connect to the master
-
 	conn, err := helper.DialWithRetry(client.masterServer, 3)
 	if err != nil {
 		client.logger.Warningf("Failed to connect to master server at", client.masterServer)
@@ -287,6 +287,7 @@ func (client *Client) WriteToMasterServer(request common.ClientMasterWriteReques
 	if err != nil {
 		return nil, common.ErrEncodeMessage
 	}
+	
 	_, err = conn.Write(requestBytes)
 	if err != nil {
 		return nil, common.ErrWriteConnection
