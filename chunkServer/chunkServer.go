@@ -1,7 +1,6 @@
 package chunkserver
 
 import (
-	"bytes"
 	"errors"
 	"hash/crc32"
 	"log"
@@ -42,8 +41,8 @@ type ChunkCheckSum struct {
 	crcTable *crc32.Table
 }
 
-type Chunk struct{
-	mu *sync.Mutex
+type Chunk struct {
+	mu            *sync.Mutex
 	versionNumber atomic.Int64
 }
 type ChunkServer struct {
@@ -76,6 +75,7 @@ func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 	}
 	logger := common.DefaultLogger(common.ERROR)
 	chunkServer := &ChunkServer{
+		CheckSums:            make(map[int64][]byte),
 		checkSummer:          checkSummer,
 		logger:               logger,
 		shutDownChan:         make(chan struct{}, 1),
@@ -110,27 +110,26 @@ tations while its chunkserver was down (Section 4.5). Stale
 Chunk replicas may become stale if a chunkserver fails and misses mutations to the chunk while it is down. For
 each chunk, the master maintains a chunk version number to distinguish between up-to-date and stale replicas.
 Whenever the master grants a new lease on a chunk, it increases the chunkversion number and informs the up-to
-date replicas. 
+date replicas.
 The master and these replicas all record the new version number in their persistent state.
-This occurs before any client is notified and therefore before it can start writing to the chunk. 
-If another replica is currently unavailable, its chunkversion number will not be advanced. 
-The master will detect that this chunkserver has a stale replica when the chunkserver restarts 
+This occurs before any client is notified and therefore before it can start writing to the chunk.
+If another replica is currently unavailable, its chunkversion number will not be advanced.
+The master will detect that this chunkserver has a stale replica when the chunkserver restarts
 and reports its set of chunks and their associated version numbers. If the master sees a
-version number greater than the one in its records, the master assumes that it failed when 
+version number greater than the one in its records, the master assumes that it failed when
 granting the lease and so takes the higher version to be up-to-date.
-The master removes stale replicas in its regular garbage collection. Before that, 
+The master removes stale replicas in its regular garbage collection. Before that,
 it effectively considers a stale replica not to exist at all when it replies to client requests for chunk information.
-As another safeguard, the master includes the chunkversion number when it informs clients which chunkserver 
+As another safeguard, the master includes the chunkversion number when it informs clients which chunkserver
 holds a lease on a chunk or when it instructs a chunkserver to read the chunk from another chunkserver
-in a cloning operation. 
+in a cloning operation.
 The client or the chunkserver verifies the version number when it performs the operation so that
 it is always accessing up-to-date data.
 
-master ->gets a write request -> before granting a new lease->does a increase chunk version number operation 
+master ->gets a write request -> before granting a new lease->does a increase chunk version number operation
 ->writes the op to log-> notifies the chosen chunk servers with up to date replicas of the new version number->
-replies to the client with the primary chunk server and secondary chunk servers  
+replies to the client with the primary chunk server and secondary chunk servers
 */
-
 
 /* ChunkServer->ChunkServer Request */
 // Responsible for sending the commit request to a chunkServer. Uses exponential backoff with jitter.
@@ -314,18 +313,14 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 		return errorFunc()
 	}
 
-	chunkBytes := chunkBuffer.Bytes()
-	chunkLength := len(chunkBytes)
-	lastChunkIndex := chunkLength / 100
-	lastChunkBytes := chunkBytes[lastChunkIndex*100 : chunkLength]
-	lastChunkBuffer := bytes.NewBuffer(lastChunkBytes)
-	chunkServer.mu.RLock()
-	checkSumData, present := chunkServer.CheckSums[request.ChunkHandle]
+	lastChunkBuffer := chunkServer.getLastPartOfChunk(chunkBuffer)
+
+	_, present := chunkServer.getCheckSum(request.ChunkHandle)
 	if !present {
 		return errorFunc()
 	}
-	chunkServer.mu.RUnlock()
-	checkSumBuffer := bytes.NewBuffer(checkSumData)
+
+	// checkSumBuffer := bytes.NewBuffer(checkSumData)
 	// Get the offset from which we have to write to the chunk
 	// On an atomic append all the primary and secondary chunk servers have to append at the same offset
 	chunkOffset := request.ChunkOffset
@@ -336,13 +331,13 @@ func (chunkServer *ChunkServer) handleInterChunkServerCommitRequest(conn net.Con
 			chunk, request.ChunkHandle,
 			mutationId,
 			chunkOffset,
-			lastChunkBuffer,
-			checkSumBuffer)
+			lastChunkBuffer)
 		if err != nil {
 			return errorFunc()
 		}
 		chunkOffset += amountWritten
 	}
+
 	chunk.Close()
 
 	// send the successfull response back to the primary
@@ -377,20 +372,12 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 
 	log.Println("HANDLING THE PRIMARY COMMIT FOR ", chunkHandle)
 
-	chunkServer.mu.RLock()
-	chunkMutex, exists := chunkServer.chunkManager[chunkHandle]
-	chunkServer.mu.RUnlock()
+	chunkMutex, exists := chunkServer.getChunkMutex(chunkHandle)
 
 	if !exists {
-		chunkServer.mu.Lock()
-		// Check again in case another goroutine created it while we were waiting
-		_, exists = chunkServer.chunkManager[chunkHandle]
-		if !exists {
-			chunkMutex:=&sync.Mutex{}
-			chunkServer.chunkManager[chunkHandle] = chunkMutex
-		}
-		chunkServer.mu.Unlock()
+		chunkMutex = chunkServer.setChunkMutex(chunkHandle)
 	}
+
 	chunkMutex.Lock()
 	defer chunkMutex.Unlock()
 
@@ -404,34 +391,22 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 
 	chunk, err := chunkServer.openChunk(chunkHandle)
 	if err != nil {
-		// if there is an error in opening the file then we again return an error to the primary
+		// if there is an error in opening the chunk then we again return an error to the primary
 		return
 	}
 
+	// chunkInfo, err := chunk.Stat()
+	// if err != nil {
+	// 	return
+	// }
+
+	// chunkOffset := chunkInfo.Size()
+
+	// returns a buffer containing the entire chunk data
 	chunkBuffer, isVerified, err := chunkServer.verifyChunkCheckSum(chunk, chunkHandle)
 	if err != nil || !isVerified {
 		return
 	}
-
-	chunkBytes := chunkBuffer.Bytes()
-	chunkLength := len(chunkBytes)
-	lastChunkIndex := chunkLength / 100
-	lastChunkBytes := chunkBytes[lastChunkIndex*100 : chunkLength]
-	lastChunkBuffer := bytes.NewBuffer(lastChunkBytes)
-	chunkServer.mu.RLock()
-	checkSumData, present := chunkServer.CheckSums[chunkHandle]
-	if !present {
-		return
-	}
-	chunkServer.mu.RUnlock()
-	checkSumBuffer := bytes.NewBuffer(checkSumData)
-
-	chunkInfo, err := chunk.Stat()
-	if err != nil {
-		return
-	}
-
-	chunkOffset := chunkInfo.Size()
 
 	// this will be the offset which we will send to all the secondary chunkServers
 	// they have talked about the atomic record append in the paper
@@ -440,13 +415,24 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	// at an offset of GFS’s choosing and returns that offset to the client.
 	// We need to keep track of the offset which is present at the beginning of the mutations
 	// and return it to the client.
-	chunkOffsetStart := chunkOffset
+	initialChunkOffset := int64(chunkBuffer.Len())
+
+	chunkOffset := (initialChunkOffset)
+
+	_, present := chunkServer.getCheckSum(chunkHandle)
+	if !present {
+		return
+	}
+
+	// checkSumBuffer := bytes.NewBuffer(checkSumData)
 
 	// to keep track of which writes succeeded/failed on the primary itself
 	successfullPrimaryWrites := make([]CommitResponse, 0)
 	unsucessfullPrimaryWrites := make([]CommitResponse, 0)
 
 	mutationOrder := make([]int64, 0)
+
+	lastPartOfChunk := chunkServer.getLastPartOfChunk(chunkBuffer)
 
 	// apply the mutations on the primary chunkServer
 	for _, value := range requests {
@@ -457,8 +443,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 			chunk, chunkHandle,
 			value.commitRequest.MutationId,
 			chunkOffset,
-			lastChunkBuffer,
-			checkSumBuffer)
+			lastPartOfChunk)
 		if err != nil {
 			// either an error occurs because the write has actually failed
 			// or an error occurs due to our check on if the append is going to exceed the max
@@ -503,7 +488,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	if len(mutationOrder) > 0 {
 		interChunkServerCommitRequest := common.InterChunkServerCommitRequest{
 			ChunkHandle:   chunkHandle,
-			ChunkOffset:   chunkOffsetStart,
+			ChunkOffset:   initialChunkOffset,
 			MutationOrder: mutationOrder,
 		}
 		/* The primary replies to the client. Any errors encountered at any of the replicas are reported
@@ -653,14 +638,14 @@ func (chunkServer *ChunkServer) handleMasterHeartbeatRequest(requestBodyBytes []
 	}
 	chunkServer.mu.Lock()
 
-	chunks:=make([]common.Chunk,0)
+	chunks := make([]common.Chunk, 0)
 
-	for _,chunkHandle:=range(chunkServer.ChunkHandles){
-		chunkVersionNumber,present:=chunkServer.ChunkVersionNumbers[chunkHandle]
+	for _, chunkHandle := range chunkServer.ChunkHandles {
+		chunkVersionNumber, present := chunkServer.ChunkVersionNumbers[chunkHandle]
 		if !present {
-			chunks=append(chunks, common.Chunk{ChunkHandle: chunkHandle,ChunkVersion: 0})
-		} else{
-			chunks=append(chunks, common.Chunk{ChunkHandle: chunkHandle,ChunkVersion: chunkVersionNumber})
+			chunks = append(chunks, common.Chunk{ChunkHandle: chunkHandle, ChunkVersion: 0})
+		} else {
+			chunks = append(chunks, common.Chunk{ChunkHandle: chunkHandle, ChunkVersion: chunkVersionNumber})
 		}
 	}
 

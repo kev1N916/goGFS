@@ -1,6 +1,9 @@
 package chunkserver
 
 import (
+	"bytes"
+	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	lrucache "github.com/involk-secure-1609/goGFS/lruCache"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestLoadChunks(t *testing.T) {
@@ -23,7 +29,7 @@ func TestLoadChunks(t *testing.T) {
 		// Create some test chunk files
 		expectedChunks := []int64{123, 456, 789}
 		for _, chunkID := range expectedChunks {
-			filename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(chunkID,10)+".chunk"))
+			filename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(chunkID, 10)+".chunk"))
 			if err := os.WriteFile(filename, []byte("test data"), 0644); err != nil {
 				t.Fatalf("Failed to create test chunk file: %v", err)
 			}
@@ -59,7 +65,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Create a valid chunk file
 		validChunk := int64(123)
-		validFilename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(validChunk,10)+".chunk"))
+		validFilename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(validChunk, 10)+".chunk"))
 		if err := os.WriteFile(validFilename, []byte("test data"), 0644); err != nil {
 			t.Fatalf("Failed to create test chunk file: %v", err)
 		}
@@ -98,7 +104,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Create a valid chunk file
 		validChunk := int64(123)
-		validFilename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(validChunk,10)+".chunk"))
+		validFilename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(validChunk, 10)+".chunk"))
 		if err := os.WriteFile(validFilename, []byte("test data"), 0644); err != nil {
 			t.Fatalf("Failed to create test chunk file: %v", err)
 		}
@@ -137,7 +143,7 @@ func TestLoadChunks(t *testing.T) {
 
 		// Create a valid chunk file
 		validChunk := int64(123)
-		validFilename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(validChunk,10)+".chunk"))
+		validFilename := filepath.Join(tmpDir, filepath.Clean(strconv.FormatInt(validChunk, 10)+".chunk"))
 		if err := os.WriteFile(validFilename, []byte("test data"), 0644); err != nil {
 			t.Fatalf("Failed to create test chunk file: %v", err)
 		}
@@ -237,7 +243,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
-			mu:  sync.RWMutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -259,7 +265,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago (expired)
 				},
 			},
-			mu:  sync.RWMutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -273,7 +279,7 @@ func TestCheckIfPrimary(t *testing.T) {
 		// Test with a lease that's well past expiration
 		server.LeaseGrants[123].GrantTime = time.Now().Add(-90 * time.Second) // 90 seconds ago
 		result = server.checkIfPrimary(123)
-        
+
 		if result != false {
 			t.Errorf("Expected false for expired lease grant (90 seconds), got %v", result)
 		}
@@ -289,7 +295,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-60 * time.Second), // Exactly 60 seconds ago
 				},
 			},
-			mu:  sync.RWMutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -311,7 +317,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
-			mu:  sync.RWMutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Call the function being tested with a different chunk handle
@@ -333,15 +339,15 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second), // 30 seconds ago (still valid)
 				},
 			},
-			mu:  sync.RWMutex{},
+			mu: sync.RWMutex{},
 		}
-		
+
 		// Number of concurrent goroutines to test with
 		concurrentRequests := 100
-		
+
 		// Create a channel to collect results
 		results := make(chan bool, concurrentRequests)
-		
+
 		// Launch multiple goroutines that call checkIfPrimary concurrently
 		for range concurrentRequests {
 			go func() {
@@ -350,9 +356,9 @@ func TestCheckIfPrimary(t *testing.T) {
 				results <- result
 			}()
 		}
-		
+
 		// Check that all results are consistent
-		var i int=0
+		var i int = 0
 		expectedResult := true
 		// iterates through results until it is closed
 		for result := range results {
@@ -361,7 +367,7 @@ func TestCheckIfPrimary(t *testing.T) {
 				t.Errorf("Expected %v from concurrent access, got %v", expectedResult, result)
 				break
 			}
-			if i==100{
+			if i == 100 {
 				break
 			}
 		}
@@ -379,7 +385,7 @@ func TestCheckIfPrimary(t *testing.T) {
 					GrantTime:   time.Now().Add(-30 * time.Second),
 				},
 			},
-			mu:  sync.RWMutex{},
+			mu: sync.RWMutex{},
 		}
 
 		// Call the function being tested
@@ -391,4 +397,444 @@ func TestCheckIfPrimary(t *testing.T) {
 			t.Errorf("Current behavior: Expected true for non-granted lease with valid time, got %v", result)
 		}
 	})
+}
+
+func TestMutateChunk(t *testing.T) {
+	t.Run("tests mutations to an empty file", func(t *testing.T) {
+		// Setup a ChunkServer with empty lease grants
+
+		testChunkHandle := int64(1)
+		tmpDir, err := os.MkdirTemp("", "chunktest")
+		if err != nil {
+			t.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		testMutationId := int64(23)
+		testData := []byte{'t', 'e', 's', 't'}
+		server := &ChunkServer{
+			ChunkDirectory: tmpDir,
+			LeaseGrants:    make(map[int64]*LeaseGrant),
+			LruCache:       lrucache.NewLRUBufferCache(100),
+			mu:             sync.RWMutex{},
+			CheckSums:      make(map[int64][]byte),
+			checkSummer: &ChunkCheckSum{
+				crcTable: crc32.MakeTable(crc32.Castagnoli),
+			},
+		}
+
+		chunk, err := server.openChunk(testChunkHandle)
+		assert.Nil(t, err)
+
+		chunkBuffer, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+		assert.Nil(t, err)
+		assert.NotNil(t, chunkBuffer)
+		assert.True(t, verified)
+
+		lastPartOfChunkBuffer := server.getLastPartOfChunk(chunkBuffer)
+		assert.NotNil(t, lastPartOfChunkBuffer)
+
+		server.LruCache.Put(testMutationId, testData)
+
+		checkSumData, present := server.getCheckSum(testChunkHandle)
+		assert.True(t, present)
+
+		checkSumBuffer := bytes.NewBuffer(checkSumData)
+		assert.NotNil(t, checkSumBuffer)
+
+		_, err = server.mutateChunk(chunk, testChunkHandle, testMutationId, 0, lastPartOfChunkBuffer)
+		assert.Nil(t, err)
+
+	})
+
+	t.Run("testing if server.loadChunks works", func(t *testing.T) {
+		// Setup a ChunkServer with empty lease grants
+
+		testChunkHandle := int64(1)
+		tmpDir, err := os.MkdirTemp("", "chunktest")
+		if err != nil {
+			t.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		// testMutationId := int64(23)
+		// testData := []byte{'t', 'e', 's', 't'}
+
+		testNewData := []byte{
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '1',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '2',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '3',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '4',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '5',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '6',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '7',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '8',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '9',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '1', '0',
+		}
+
+		server := &ChunkServer{
+			ChunkDirectory: tmpDir,
+			LeaseGrants:    make(map[int64]*LeaseGrant),
+			LruCache:       lrucache.NewLRUBufferCache(100),
+			mu:             sync.RWMutex{},
+			CheckSums:      make(map[int64][]byte),
+			checkSummer: &ChunkCheckSum{
+				crcTable: crc32.MakeTable(crc32.Castagnoli),
+			},
+		}
+
+		chunk, err := server.openChunk(testChunkHandle)
+		assert.Nil(t, err)
+
+		chunkCheckSumFile, err := server.openChunkCheckSum(testChunkHandle)
+		assert.Nil(t, err)
+
+		_, err = chunk.Write(testNewData)
+		assert.Nil(t, err)
+
+		calculatedCheckSum, err := server.calculateChunkCheckSum(testNewData)
+		assert.Nil(t, err)
+		assert.NotEmpty(t, calculatedCheckSum)
+
+		_, err = chunkCheckSumFile.Write(calculatedCheckSum)
+		assert.Nil(t, err)
+
+		err = server.loadChunks()
+		assert.Nil(t, err)
+
+		chunkBuffer, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+		assert.Nil(t, err)
+		assert.NotNil(t, chunkBuffer)
+		assert.True(t, verified)
+
+	})
+
+	t.Run("tests if writing to a pre-existing chunk works", func(t *testing.T) {
+		// Setup a ChunkServer with empty lease grants
+
+		testChunkHandle := int64(1)
+		tmpDir, err := os.MkdirTemp("", "chunktest")
+		if err != nil {
+			t.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		testMutationId := int64(23)
+		testData := []byte{'t', 'e', 's', 't'}
+
+		testNewData := []byte{
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '1',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '2',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '3',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '4',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '5',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '6',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '7',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '8',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '9',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '1', '0',
+		}
+
+		server := &ChunkServer{
+			ChunkDirectory: tmpDir,
+			LeaseGrants:    make(map[int64]*LeaseGrant),
+			LruCache:       lrucache.NewLRUBufferCache(100),
+			mu:             sync.RWMutex{},
+			CheckSums:      make(map[int64][]byte),
+			checkSummer: &ChunkCheckSum{
+				crcTable: crc32.MakeTable(crc32.Castagnoli),
+			},
+		}
+
+		chunk, err := server.openChunk(testChunkHandle)
+		assert.Nil(t, err)
+
+		chunkCheckSumFile, err := server.openChunkCheckSum(testChunkHandle)
+		assert.Nil(t, err)
+
+		_, err = chunk.Write(testNewData)
+		assert.Nil(t, err)
+
+		calculatedCheckSum, err := server.calculateChunkCheckSum(testNewData)
+		assert.Nil(t, err)
+		assert.NotEmpty(t, calculatedCheckSum)
+
+		_, err = chunkCheckSumFile.Write(calculatedCheckSum)
+		assert.Nil(t, err)
+
+		// server.setCheckSum(testChunkHandle,0,calculatedCheckSum,[]byte{})
+
+		err = server.loadChunks()
+		assert.Nil(t, err)
+
+		chunkBuffer, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+		assert.Nil(t, err)
+		assert.NotNil(t, chunkBuffer)
+		assert.True(t, verified)
+
+		server.LruCache.Put(testMutationId, testData)
+
+		lastPartOfChunkBuffer := server.getLastPartOfChunk(chunkBuffer)
+		assert.NotNil(t, lastPartOfChunkBuffer)
+
+		checkSumData, present := server.getCheckSum(testChunkHandle)
+		assert.True(t, present)
+
+		checkSumBuffer := bytes.NewBuffer(checkSumData)
+		assert.NotNil(t, checkSumBuffer)
+
+		_, err = server.mutateChunk(chunk, testChunkHandle, testMutationId, 0, lastPartOfChunkBuffer)
+		assert.Nil(t, err)
+
+	})
+
+	t.Run("tests if multiple writes to a new chunk works", func(t *testing.T) {
+		// Setup a ChunkServer with empty lease grants
+
+		testChunkHandle := int64(1)
+		tmpDir, err := os.MkdirTemp("", "chunktest")
+		if err != nil {
+			t.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		testMutationId := int64(23)
+
+		testNewData := []byte{
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '1',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '2',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '3',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '4',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '5',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '6',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '7',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '8',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '9',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '1', '0',
+		}
+
+		server := &ChunkServer{
+			ChunkDirectory: tmpDir,
+			LeaseGrants:    make(map[int64]*LeaseGrant),
+			LruCache:       lrucache.NewLRUBufferCache(100),
+			mu:             sync.RWMutex{},
+			CheckSums:      make(map[int64][]byte),
+			checkSummer: &ChunkCheckSum{
+				crcTable: crc32.MakeTable(crc32.Castagnoli),
+			},
+		}
+
+		chunk, err := server.openChunk(testChunkHandle)
+		assert.Nil(t, err)
+
+		chunkBuffer, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+		assert.Nil(t, err)
+		assert.NotNil(t, chunkBuffer)
+		assert.True(t, verified)
+
+		lastPartOfChunkBuffer := server.getLastPartOfChunk(chunkBuffer)
+		assert.NotNil(t, lastPartOfChunkBuffer)
+
+		server.LruCache.Put(testMutationId, testNewData)
+
+		initialChunkOffset := int64(0)
+
+		for range 4 {
+			changeInOffset, err := server.mutateChunk(chunk, testChunkHandle, testMutationId, initialChunkOffset, lastPartOfChunkBuffer)
+			assert.Nil(t, err)
+			initialChunkOffset += changeInOffset
+		}
+
+	})
+
+	t.Run("tests if multiple writes to a pre-existing chunk works", func(t *testing.T) {
+		// Setup a ChunkServer with empty lease grants
+
+		testChunkHandle := int64(1)
+		tmpDir, err := os.MkdirTemp("", "chunktest")
+		if err != nil {
+			t.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		testMutationId := int64(23)
+		// testData := []byte{'t', 'e', 's', 't'}
+
+		testNewData := []byte{
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '1',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '2',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '3',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '4',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '5',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '6',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '7',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '8',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '9',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '1',
+		}
+
+		server := &ChunkServer{
+			ChunkDirectory: tmpDir,
+			LeaseGrants:    make(map[int64]*LeaseGrant),
+			LruCache:       lrucache.NewLRUBufferCache(100),
+			mu:             sync.RWMutex{},
+			CheckSums:      make(map[int64][]byte),
+			checkSummer: &ChunkCheckSum{
+				crcTable: crc32.MakeTable(crc32.Castagnoli),
+			},
+		}
+
+		chunk, err := server.openChunk(testChunkHandle)
+		assert.Nil(t, err)
+
+		chunkCheckSumFile, err := server.openChunkCheckSum(testChunkHandle)
+		assert.Nil(t, err)
+
+		_, err = chunk.Write(testNewData)
+		assert.Nil(t, err)
+
+		err = chunk.Sync()
+		assert.Nil(t, err)
+
+		calculatedCheckSum, err := server.calculateChunkCheckSum(testNewData)
+		assert.Nil(t, err)
+		assert.NotEmpty(t, calculatedCheckSum)
+
+		server.CheckSums[testChunkHandle] = calculatedCheckSum
+		_, err = chunkCheckSumFile.Write(calculatedCheckSum)
+		assert.Nil(t, err)
+
+		info, err := chunk.Stat()
+		assert.Nil(t, err)
+		assert.NotZero(t, info.Size())
+		t.Log(info.Size())
+
+		_, err = chunk.Seek(0, io.SeekStart)
+		assert.Nil(t, err)
+
+		chunkBuffer, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+		assert.Nil(t, err)
+		assert.NotNil(t, chunkBuffer)
+		assert.NotZero(t,chunkBuffer.Len())
+		assert.True(t, verified)
+
+		server.LruCache.Put(testMutationId, testNewData)
+
+		lastPartOfChunkBuffer := server.getLastPartOfChunk(chunkBuffer)
+		assert.NotNil(t, lastPartOfChunkBuffer)
+
+		initialChunkOffset := info.Size()
+		_, err = chunk.Seek(initialChunkOffset, io.SeekStart)
+		assert.Nil(t, err)
+		for i := range 2 {
+
+			changeInOffset, err := server.mutateChunk(chunk, testChunkHandle, testMutationId, initialChunkOffset, lastPartOfChunkBuffer)
+			assert.Nil(t, err)
+			_, err = chunk.Seek(0, io.SeekStart)
+			assert.Nil(t, err)
+			_, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+			assert.Nil(t, err)
+			assert.True(t, verified)
+			t.Log(i,verified)
+			initialChunkOffset += changeInOffset
+		}
+
+	})
+
+	
+	t.Run("part 2 of checking if multiple writes to a pre-existing chunk works", func(t *testing.T) {
+		// Setup a ChunkServer with empty lease grants
+
+		testChunkHandle := int64(1)
+		tmpDir, err := os.MkdirTemp("", "chunktest")
+		if err != nil {
+			t.Fatalf("Failed to create temp directory: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		testMutationId := int64(23)
+		// testData := []byte{'t', 'e', 's', 't'}
+
+		testNewData := []byte{
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '1',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '2',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '3',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '4',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '5',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '6',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '7',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '8',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '0', '9',
+			't', 'e', 's', 't', 'd', 'a', 't', 'a', '1', '0','t',
+		}
+
+		server := &ChunkServer{
+			ChunkDirectory: tmpDir,
+			LeaseGrants:    make(map[int64]*LeaseGrant),
+			LruCache:       lrucache.NewLRUBufferCache(100),
+			mu:             sync.RWMutex{},
+			CheckSums:      make(map[int64][]byte),
+			checkSummer: &ChunkCheckSum{
+				crcTable: crc32.MakeTable(crc32.Castagnoli),
+			},
+		}
+
+		chunk, err := server.openChunk(testChunkHandle)
+		assert.Nil(t, err)
+
+		chunkCheckSumFile, err := server.openChunkCheckSum(testChunkHandle)
+		assert.Nil(t, err)
+
+		_, err = chunk.Write(testNewData)
+		assert.Nil(t, err)
+
+		err = chunk.Sync()
+		assert.Nil(t, err)
+
+		calculatedCheckSum, err := server.calculateChunkCheckSum(testNewData)
+		assert.Nil(t, err)
+		assert.NotEmpty(t, calculatedCheckSum)
+
+		server.CheckSums[testChunkHandle] = calculatedCheckSum
+		_, err = chunkCheckSumFile.Write(calculatedCheckSum)
+		assert.Nil(t, err)
+
+		info, err := chunk.Stat()
+		assert.Nil(t, err)
+		assert.NotZero(t, info.Size())
+		t.Log(info.Size())
+
+		_, err = chunk.Seek(0, io.SeekStart)
+		assert.Nil(t, err)
+
+		chunkBuffer, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+		assert.Nil(t, err)
+		assert.NotNil(t, chunkBuffer)
+		assert.NotZero(t,chunkBuffer.Len())
+		assert.True(t, verified)
+
+		server.LruCache.Put(testMutationId, testNewData)
+
+		lastPartOfChunkBuffer := server.getLastPartOfChunk(chunkBuffer)
+		assert.NotNil(t, lastPartOfChunkBuffer)
+
+		initialChunkOffset := info.Size()
+		_, err = chunk.Seek(initialChunkOffset, io.SeekStart)
+		assert.Nil(t, err)
+		for i := range 2 {
+
+			changeInOffset, err := server.mutateChunk(chunk, testChunkHandle, testMutationId, initialChunkOffset, lastPartOfChunkBuffer)
+			assert.Nil(t, err)
+			_, err = chunk.Seek(0, io.SeekStart)
+			assert.Nil(t, err)
+			_, verified, err := server.verifyChunkCheckSum(chunk, testChunkHandle)
+			assert.Nil(t, err)
+			assert.True(t, verified)
+			t.Log(i,verified)
+			initialChunkOffset += changeInOffset
+		}
+
+	})
+
 }
