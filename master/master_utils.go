@@ -82,7 +82,7 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 
 	chunkList, ok := master.FileMap[filename]
 	if !ok {
-		return Chunk{}, nil, errors.New("no chunks present for this file")
+		return Chunk{}, nil, errors.New("no chunk handles present for this file")
 	}
 	if chunkIndex >= int(len(chunkList)) {
 		return Chunk{}, nil, errors.New("invalid chunkOffset")
@@ -92,7 +92,7 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 	// chunkHandle := chunk.ChunkHandle
 	chunkServers, ok := master.ChunkServerHandler[chunkHandle]
 	if !ok {
-		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
+		return Chunk{}, nil, errors.New("no chunk servers present for chunk handle ")
 	}
 
 	chunkServersList := make([]string, 0)
@@ -101,14 +101,15 @@ func (master *Master) getMetadataForFile(filename string, chunkIndex int) (Chunk
 			chunkServersList = append(chunkServersList, server)
 		}
 	}
-	if len(chunkServers) < 3 {
+
+	if len(chunkServers) < 3 && !master.inTestMode {
 		err := master.cloneChunk(chunkServersList, chunkHandle)
 		log.Println(err)
 	}
 
 	chunk, ok := master.ChunkHandles[chunkHandle]
 	if !ok {
-		return Chunk{}, nil, errors.New("no chunk servers present for chunk")
+		return Chunk{}, nil, errors.New("no chunk present for this chunk handle")
 	}
 	return *chunk, chunkServersList, nil
 }
@@ -133,6 +134,11 @@ func (master *Master) chooseChunkServers(chunkHandle int64) error {
 		for _, server := range servers {
 			server.NumberOfChunks++
 			master.ServerList.Push(server)
+
+			_, present := master.ChunkServerHandler[chunkHandle]
+			if !present {
+				master.ChunkServerHandler[chunkHandle] = make(map[string]bool)
+			}
 			master.ChunkServerHandler[chunkHandle][server.Server] = true
 		}
 		return nil
@@ -351,7 +357,9 @@ func (master *Master) assignChunkServers(chunkHandle int64) (string, []string, b
 		err := master.chooseChunkServers(chunkHandle)
 		// if we have insufficent chunkServers connected to the master
 		// we return an error
-		return "", nil, false, err
+		if err != nil {
+			return "", nil, false, err
+		}
 	}
 	// assign primary and secondary chunkServers
 	primaryServer, secondaryServers, leaseValid, err := master.choosePrimaryAndSecondary(chunkHandle)
@@ -376,15 +384,20 @@ func (master *Master) handleChunkCreation(fileName string) (*Chunk, error) {
 
 	// if the file does not exist the master creates a new one and
 	// creates a new chunk for that file
-	_, fileAlreadyExists := master.FileMap[fileName]
-	if !fileAlreadyExists || len(master.FileMap[fileName]) == 0 {
+	chunkHandleList, fileAlreadyExists := master.FileMap[fileName]
+	if !fileAlreadyExists || len(chunkHandleList) == 0 {
 		master.FileMap[fileName] = make([]int64, 0)
 		chunk = Chunk{
 			ChunkHandle:  master.generateNewChunkId(),
 			ChunkVersion: 0,
 		}
 		op.ChunkHandle = chunk.ChunkHandle
+	} else{
+		chunkHandle:=master.FileMap[fileName][len(chunkHandleList)-1]
+		chunk=*master.ChunkHandles[chunkHandle]
 	}
+
+
 	if op.ChunkHandle != -1 {
 		// log the operation if it has resulted in a new Chunk creation otherwise there is no need to log it
 		if !master.inTestMode {
@@ -450,14 +463,22 @@ func (master *Master) createNewChunk(fileName string, lastChunkHandle int64) err
 	chunksIds := master.FileMap[fileName]
 	sz := len(chunksIds)
 
-	previousChunkHandle := chunksIds[sz-1]
-	if previousChunkHandle == lastChunkHandle {
-		log.Println("need to make a new chunk")
+	if sz == 0 {
 		chunk := Chunk{
-			ChunkHandle:  master.generateNewChunkId(),
-			ChunkVersion: 0,
+			ChunkHandle: master.generateNewChunkId(),
 		}
 		op.ChunkHandle = chunk.ChunkHandle
+
+	}
+	if sz > 0 {
+		previousChunkHandle := chunksIds[sz-1]
+		if previousChunkHandle == lastChunkHandle {
+			log.Println("need to make a new chunk")
+			chunk := Chunk{
+				ChunkHandle: master.generateNewChunkId(),
+			}
+			op.ChunkHandle = chunk.ChunkHandle
+		}
 	}
 
 	if !master.inTestMode && op.ChunkHandle != -1 {
@@ -606,10 +627,7 @@ func (master *Master) readCheckpoint() error {
 				chunkHandles := make([]int64, 0)
 				for _, chunk := range chunks {
 					chunkHandles = append(chunkHandles, chunk.ChunkHandle)
-					master.ChunkHandles[chunk.ChunkHandle] = &Chunk{
-						ChunkHandle:  chunk.ChunkHandle,
-						ChunkVersion: chunk.ChunkVersion,
-					}
+					master.ChunkHandles[chunk.ChunkHandle] = chunk
 				}
 				master.FileMap[file] = chunkHandles
 				// master.ChunkHandles = append(master.ChunkHandles, chunkHandles...)
@@ -752,13 +770,14 @@ func (master *Master) decodeFileAndChunks(data []byte, offset int) (int, string,
 	offset += 2
 
 	// Ensure there's enough data to read all chunks
-	if offset+int(chunksLen)*8 > len(data) {
+	if offset+int(chunksLen)*16 > len(data) {
 		return 0, "", nil, errors.New("insufficient data to read chunks")
 	}
 
 	// Decode chunks
 	chunks := make([]*Chunk, chunksLen)
 	for i := range chunks {
+		chunks[i]=&Chunk{}
 		chunks[i].ChunkHandle = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
 		offset += 8
 		chunks[i].ChunkVersion = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
@@ -766,7 +785,7 @@ func (master *Master) decodeFileAndChunks(data []byte, offset int) (int, string,
 	}
 
 	// Calculate total bytes read
-	totalBytesRead := 2 + len(fileName) + 2 + len(chunks)*8
+	totalBytesRead := 2 + len(fileName) + 2 + len(chunks)*16
 
 	return totalBytesRead, fileName, chunks, nil
 }
@@ -899,7 +918,7 @@ func (master *Master) setChunkVersionNumber(chunkHandle int64, versionNumber int
 func (master *Master) handleChunkServerIsNotUpToDate(port string, chunkHandle int64) {
 	master.mu.Lock()
 	defer master.mu.Unlock()
-	delete(master.ChunkServerHandler[chunkHandle],port)
+	delete(master.ChunkServerHandler[chunkHandle], port)
 }
 
 func (master *Master) handleChunkServerFailure(chunkServerConnection *ChunkServerConnection) {

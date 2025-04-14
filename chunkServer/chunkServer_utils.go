@@ -325,6 +325,9 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 func (chunkServer *ChunkServer) openChunk(chunkHandle int64) (*os.File, error) {
 	chunkFileName := chunkServer.translateChunkHandleToFileName(chunkHandle, false)
 	chunk, err := os.OpenFile(chunkFileName, os.O_CREATE|os.O_RDWR, 0600)
+	if err!=nil{
+		return nil,err
+	}
 	_, err = chunk.Seek(0, io.SeekStart)
 	if err != nil {
 		return nil, err

@@ -41,10 +41,10 @@ type ChunkCheckSum struct {
 	crcTable *crc32.Table
 }
 
-type Chunk struct {
-	mu            *sync.Mutex
-	versionNumber atomic.Int64
-}
+// type Chunk struct {
+// 	mu            *sync.Mutex
+// 	versionNumber atomic.Int64
+// }
 type ChunkServer struct {
 	CheckSums                  map[int64][]byte
 	checkSummer                *ChunkCheckSum
@@ -665,10 +665,10 @@ func (chunkServer *ChunkServer) handleMasterHeartbeatRequest(requestBodyBytes []
 	return nil
 }
 
-func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes []byte) error {
+// func (chunkServer *ChunkServer) writeMasterHeartbeatResponse(responseBodyBytes []byte) error {
 
-	return nil
-}
+// 	return nil
+// }
 
 func (chunkServer *ChunkServer) handleMasterHeartbeatResponse(messageBody []byte) {
 

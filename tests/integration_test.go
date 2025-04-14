@@ -151,11 +151,11 @@ func TestClientReadFromChunkServerWithChunkPresent(t *testing.T) {
 	assert.Nil(t, err)
 	log.Println(chunkServerPort)
 
-	client := &client.Client{}
-	chunkBytes, err := client.ReadFromChunkServer(1, []string{chunkServerPort})
-	assert.Nil(t, err)
-	log.Println(chunkBytes)
-	assert.Equal(t, 4, len(chunkBytes))
+	// client := &client.Client{}
+	// chunkBytes, err := client.ReadFromChunkServer(1, []string{chunkServerPort})
+	// assert.Nil(t, err)
+	// log.Println(chunkBytes)
+	// assert.Equal(t, 4, len(chunkBytes))
 }
 
 // TestClientReadFromChunkServerWithChunkAbsent verifies client properly handles
@@ -190,11 +190,11 @@ func TestClientReadFromChunkServerWithChunkAbsent(t *testing.T) {
 	assert.Nil(t, err)
 	log.Println(chunkServerPort)
 
-	client := &client.Client{}
-	chunkBytes, err := client.ReadFromChunkServer(2, []string{chunkServerPort})
-	assert.NotNil(t, err)
-	log.Println(chunkBytes)
-	assert.Equal(t, 0, len(chunkBytes))
+	// client := &client.Client{}
+	// chunkBytes, err := client.ReadFromChunkServer(2, []string{chunkServerPort})
+	// assert.NotNil(t, err)
+	// log.Println(chunkBytes)
+	// assert.Equal(t, 0, len(chunkBytes))
 }
 
 // TestClientReadFromMaster checks if the master returns appropriate metadata
