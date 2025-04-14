@@ -69,19 +69,19 @@ func (chunkServer *ChunkServer) mutateChunkCheckSum(chunkHandle int64) error {
 // verifies the checksum
 func (chunkServer *ChunkServer) verifyChunkCheckSum(chunkFile *os.File, chunkHandle int64) (*bytes.Buffer, bool, error) {
 	chunkBytes := bytes.Buffer{}
-	
+
 	written, err := io.Copy(&chunkBytes, bufio.NewReader(chunkFile))
 	if err != nil {
 		if err != io.EOF {
 			return nil, false, err
 		}
 	}
-	
-	log.Println("number of bytes written",written)
 
-	log.Println("length of chunkBytes during verification",chunkBytes.Len())
+	log.Println("number of bytes written", written)
+
+	log.Println("length of chunkBytes during verification", chunkBytes.Len())
 	if chunkBytes.Len() == 0 {
-		chunkServer.setCheckSum(chunkHandle, 0, []byte{}, []byte{})
+		chunkServer.setCheckSum(chunkHandle, -1, []byte{}, []byte{})
 		return &chunkBytes, true, nil
 	}
 	presentCheckSum, present := chunkServer.getCheckSum(chunkHandle)
@@ -89,12 +89,12 @@ func (chunkServer *ChunkServer) verifyChunkCheckSum(chunkFile *os.File, chunkHan
 		return nil, false, errors.New("checksum not present")
 	}
 
-	log.Println("length of calculatedChecksum",len(presentCheckSum))
+	log.Println("length of calculatedChecksum", len(presentCheckSum))
 
 	validateChkSum := func(calculatedChksum uint32, chunkIndex int) error {
 		validCheckSum := binary.LittleEndian.Uint32(presentCheckSum[chunkIndex*4 : chunkIndex*4+4])
 		if calculatedChksum != validCheckSum {
-			log.Println(validCheckSum,calculatedChksum)
+			log.Println(validCheckSum, calculatedChksum)
 			return errors.New("checksum does not match")
 		}
 		return nil
@@ -325,9 +325,9 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 func (chunkServer *ChunkServer) openChunk(chunkHandle int64) (*os.File, error) {
 	chunkFileName := chunkServer.translateChunkHandleToFileName(chunkHandle, false)
 	chunk, err := os.OpenFile(chunkFileName, os.O_CREATE|os.O_RDWR, 0600)
-	_,err=chunk.Seek(0,io.SeekStart)
-	if err!=nil{
-		return nil,err
+	_, err = chunk.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
 	}
 	return chunk, err
 }
@@ -368,7 +368,8 @@ func (chunkServer *ChunkServer) getLastPartOfChunk(chunkBuffer *bytes.Buffer) *b
 
 	lastChunkIndex := chunkLength / 100
 	lastChunkBytes := chunkBytes[lastChunkIndex*100 : chunkLength]
-	lastChunkBuffer := bytes.NewBuffer(lastChunkBytes)
+	lastChunkBuffer := &bytes.Buffer{}
+	lastChunkBuffer.Write(lastChunkBytes)
 	return lastChunkBuffer
 }
 
@@ -494,7 +495,7 @@ func (chunkServer *ChunkServer) getCheckSum(chunkHandle int64) ([]byte, bool) {
 func (chunkServer *ChunkServer) setCheckSum(chunkHandle int64, oldLength int, newLastCheckSum []byte, restOfTheCheckSum []byte) {
 	chunkServer.mu.Lock()
 	log.Println("oldLength is", oldLength)
-	if oldLength != 0 {
+	if oldLength != -1 && oldLength!=0 {
 		chunkServer.CheckSums[chunkHandle] = chunkServer.CheckSums[chunkHandle][0 : oldLength-4]
 	}
 
@@ -597,14 +598,20 @@ func (chunkServer *ChunkServer) mutateChunk(
 		if err != nil {
 			return 0, errors.New("calculating checksum failed")
 		}
-
-		chunkServer.setCheckSum(chunkHandle, lengthOfExistingChecksum, newCheckSumForLastChunk, []byte{})
+		if amountNeeded == lengthOfMutation {
+			chunkServer.setCheckSum(chunkHandle, -1, newCheckSumForLastChunk, []byte{})
+		} else {
+			chunkServer.setCheckSum(chunkHandle, lengthOfExistingChecksum, newCheckSumForLastChunk, []byte{})
+		}
 	}
 
-	lastChunkBufferLength:=lastChunkBuffer.Len()
-	lastChunkBufferIndex:=lastChunkBufferLength/100
+	lastChunkBufferLength := lastChunkBuffer.Len()
+	lastChunkBufferIndex := lastChunkBufferLength / 100
 
-	lastChunkBuffer=bytes.NewBuffer(lastChunkBuffer.Bytes()[lastChunkBufferIndex*100:lastChunkBufferLength])
+	newLastChunkBytes := lastChunkBuffer.Bytes()[lastChunkBufferIndex*100 : lastChunkBufferLength]
+
+	lastChunkBuffer.Reset()
+	lastChunkBuffer.Write(newLastChunkBytes)
 
 	amountWritten, err := file.WriteAt(data, chunkOffset)
 	if err != nil {
