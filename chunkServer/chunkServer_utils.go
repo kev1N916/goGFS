@@ -318,14 +318,17 @@ func (chunkServer *ChunkServer) startCommitRequestHandler() {
 		}
 
 		// Process the batch of commit requests
+
+		log.Println("Processing commit request batch of length",len(pendingCommits))
 		chunkServer.processCommitBatch(pendingCommits)
 	}
 }
 
 func (chunkServer *ChunkServer) openChunk(chunkHandle int64) (*os.File, error) {
 	chunkFileName := chunkServer.translateChunkHandleToFileName(chunkHandle, false)
-	chunk, err := os.OpenFile(chunkFileName, os.O_CREATE|os.O_RDWR, 0600)
+	chunk, err := os.OpenFile(chunkFileName, os.O_CREATE|os.O_RDWR, 0666)
 	if err!=nil{
+		log.Println(err)
 		return nil,err
 	}
 	_, err = chunk.Seek(0, io.SeekStart)
@@ -389,7 +392,7 @@ func (chunkServer *ChunkServer) loadChunks() error {
 		if !errors.As(err, &pathErr) {
 			return err
 		}
-		err = os.Mkdir(chunkServer.ChunkDirectory, 0600)
+		err = os.Mkdir(chunkServer.ChunkDirectory, 0755)
 		return err
 	}
 
@@ -512,15 +515,20 @@ func (chunkServer *ChunkServer) setCheckSum(chunkHandle int64, oldLength int, ne
 	chunkServer.mu.Unlock()
 }
 func (chunkServer *ChunkServer) getChunkMutex(chunkHandle int64) (*sync.Mutex, bool) {
+
+	log.Println("acquiring read lock to get chunk mutex")
 	chunkServer.mu.RLock()
 	defer chunkServer.mu.RUnlock()
 
 	chunkMutex, exists := chunkServer.chunkManager[chunkHandle]
+	log.Println("releasing read lock acquired while trying to get chunk mutex")
 
 	return chunkMutex, exists
 }
 
 func (chunkServer *ChunkServer) setChunkMutex(chunkHandle int64) *sync.Mutex {
+	log.Println("acquiring write lock to get chunk mutex")
+
 	chunkServer.mu.Lock()
 	defer chunkServer.mu.Unlock()
 	// Check again in case another goroutine created it while we were waiting
@@ -529,6 +537,9 @@ func (chunkServer *ChunkServer) setChunkMutex(chunkHandle int64) *sync.Mutex {
 		chunkMutex = &sync.Mutex{}
 		chunkServer.chunkManager[chunkHandle] = chunkMutex
 	}
+
+	log.Println("releasing write lock acquired while trying to get chunk mutex")
+
 	return chunkMutex
 }
 

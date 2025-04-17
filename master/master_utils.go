@@ -524,7 +524,7 @@ func (master *Master) startBackgroundCheckpoint() {
 // tested cuz readCheckpoint and readOpLog are tested
 func (master *Master) recover() error {
 
-	
+	log.Println("reading checkpoint of master")
 	err := master.readCheckpoint()
 	if err != nil {
 		return err
@@ -541,8 +541,13 @@ func (master *Master) recover() error {
 
 // tested
 func (master *Master) readCheckpoint() error {
-	checkpoint, err := os.Open(filepath.Join(master.MasterDirectory,"checkpoint.chk"))
-	log.Println(checkpoint)
+
+	log.Println("finding the path name")
+	log.Println(master.MasterDirectory)
+	fileName:=filepath.Join(master.MasterDirectory,"checkpoint.chk")
+	log.Println("why is this not logging ",fileName)
+
+	checkpoint, err := os.Open(fileName)
 	if err != nil {
 		var pathErr *fs.PathError
 		if !errors.As(err,&pathErr) {

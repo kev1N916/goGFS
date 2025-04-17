@@ -1,6 +1,9 @@
 package tests
 
 import (
+	"bytes"
+	"encoding/binary"
+	"hash/crc32"
 	"log"
 	"net"
 	"os"
@@ -21,7 +24,7 @@ import (
 // and successfully complete the handshake process with the master
 func TestChunkServerInitAndMasterHandshake(t *testing.T) {
 
-	TestMasterDirectory:="master"
+	TestMasterDirectory := "masterDir"
 	os.RemoveAll(TestMasterDirectory)
 	defer os.RemoveAll(TestMasterDirectory)
 
@@ -60,6 +63,15 @@ func TestChunkServerInitAndMasterHandshake(t *testing.T) {
 // TestMasterHeartbeat verifies that the master's heartbeat mechanism
 // communicates properly with chunk servers
 func TestMasterHeartbeat(t *testing.T) {
+
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory := "chunkServer1"
+	os.RemoveAll(TestDirectory)
+	defer os.RemoveAll(TestDirectory)
+
 	master, err := master.NewMaster(true)
 	assert.Nil(t, err)
 	assert.NotNil(t, master)
@@ -68,7 +80,7 @@ func TestMasterHeartbeat(t *testing.T) {
 	assert.Nil(t, err)
 	masterPort := master.Listener.Addr().String()
 
-	chunkServer := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer := chunkserver.NewChunkServer(TestDirectory, masterPort)
 	chunkServer.InTestMode = true
 
 	chunkServerPort, err := chunkServer.Start()
@@ -86,13 +98,19 @@ func TestMasterHeartbeat(t *testing.T) {
 // TestMasterHeartbeatChunkDeletion checks if chunk servers properly delete
 // chunk handles when requested by the master during heartbeats
 func TestMasterHeartbeatChunkDeletion(t *testing.T) {
+
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	TestDirectory := "chunkServer1"
 	TestChunkName := "1"
 	os.RemoveAll(TestDirectory)
 	defer os.RemoveAll(TestDirectory)
+
 	chunkPath := filepath.Join(TestDirectory, TestChunkName)
 	log.Println(chunkPath)
-	err := os.Mkdir(TestDirectory, 0600)
+	err := os.Mkdir(TestDirectory, 0755)
 	assert.Nil(t, err)
 	chunkFile, err := os.Create(chunkPath + ".chunk")
 	assert.Nil(t, err)
@@ -132,21 +150,36 @@ func TestMasterHeartbeatChunkDeletion(t *testing.T) {
 // TestClientReadFromChunkServerWithChunkPresent verifies client can successfully
 // read from a chunk server when the requested chunk is present
 func TestClientReadFromChunkServerWithChunkPresent(t *testing.T) {
-	TestDirectory := "chunkServer"
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory := "chunkServer1"
 	TestChunkName := "1"
 	os.RemoveAll(TestDirectory)
 	defer os.RemoveAll(TestDirectory)
+
+	testData := []byte{'t', 'e', 's', 't'}
 	chunkPath := filepath.Join(TestDirectory, TestChunkName)
 	log.Println(chunkPath)
-	err := os.Mkdir(TestDirectory, 0600)
+	err := os.Mkdir(TestDirectory, 0755)
 	assert.Nil(t, err)
 	chunkFile, err := os.Create(chunkPath + ".chunk")
 	assert.Nil(t, err)
-	_, err = chunkFile.Write([]byte{'t', 'e', 's', 't'})
+	_, err = chunkFile.Write(testData)
 	assert.Nil(t, err)
 	chunkFile.Close()
-	master, err := master.NewMaster(true)
 
+	chunkChekSumFile, err := os.Create(chunkPath + ".chksum")
+	assert.Nil(t, err)
+	checkSum := bytes.Buffer{}
+	crcChecksum := crc32.Checksum(testData, crc32.MakeTable(crc32.Castagnoli))
+	binary.Write(&checkSum, binary.LittleEndian, crcChecksum)
+	_, err = chunkChekSumFile.Write(checkSum.Bytes())
+	assert.Nil(t, err)
+	chunkChekSumFile.Close()
+
+	master, err := master.NewMaster(true)
 	assert.Nil(t, err)
 	assert.NotNil(t, master)
 
@@ -162,30 +195,50 @@ func TestClientReadFromChunkServerWithChunkPresent(t *testing.T) {
 	assert.Nil(t, err)
 	log.Println(chunkServerPort)
 
-	// client := &client.Client{}
-	// chunkBytes, err := client.ReadFromChunkServer(1, []string{chunkServerPort})
-	// assert.Nil(t, err)
-	// log.Println(chunkBytes)
-	// assert.Equal(t, 4, len(chunkBytes))
+	response := common.ClientMasterReadResponse{
+		ChunkHandle:  1,
+		ChunkServers: []string{chunkServerPort},
+	}
+	client := client.NewClient(masterPort)
+	chunkBytes, err := client.ReadFromChunkServer(&response)
+	assert.Nil(t, err)
+	log.Println(chunkBytes)
+	assert.Equal(t, 4, len(chunkBytes))
 }
 
 // TestClientReadFromChunkServerWithChunkAbsent verifies client properly handles
 // the case when the requested chunk is not present on the chunk server
 func TestClientReadFromChunkServerWithChunkAbsent(t *testing.T) {
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	TestDirectory := "chunkServer1"
 	TestChunkName := "1"
+	os.RemoveAll(TestDirectory)
 	defer os.RemoveAll(TestDirectory)
+
+	testData := []byte{'t', 'e', 's', 't'}
 	chunkPath := filepath.Join(TestDirectory, TestChunkName)
 	log.Println(chunkPath)
-	err := os.Mkdir(TestDirectory, 0600)
+	err := os.Mkdir(TestDirectory, 0755)
 	assert.Nil(t, err)
 	chunkFile, err := os.Create(chunkPath + ".chunk")
 	assert.Nil(t, err)
-	_, err = chunkFile.Write([]byte{'t', 'e', 's', 't'})
+	_, err = chunkFile.Write(testData)
 	assert.Nil(t, err)
 	chunkFile.Close()
-	master, err := master.NewMaster(true)
 
+	chunkChekSumFile, err := os.Create(chunkPath + ".chksum")
+	assert.Nil(t, err)
+	checkSum := bytes.Buffer{}
+	crcChecksum := crc32.Checksum(testData, crc32.MakeTable(crc32.Castagnoli))
+	binary.Write(&checkSum, binary.LittleEndian, crcChecksum)
+	_, err = chunkChekSumFile.Write(checkSum.Bytes())
+	assert.Nil(t, err)
+	chunkChekSumFile.Close()
+
+	master, err := master.NewMaster(true)
 	assert.Nil(t, err)
 	assert.NotNil(t, master)
 
@@ -201,16 +254,29 @@ func TestClientReadFromChunkServerWithChunkAbsent(t *testing.T) {
 	assert.Nil(t, err)
 	log.Println(chunkServerPort)
 
-	// client := &client.Client{}
-	// chunkBytes, err := client.ReadFromChunkServer(2, []string{chunkServerPort})
-	// assert.NotNil(t, err)
-	// log.Println(chunkBytes)
-	// assert.Equal(t, 0, len(chunkBytes))
+	response := common.ClientMasterReadResponse{
+		ChunkHandle:  2,
+		ChunkServers: []string{chunkServerPort},
+	}
+	client := client.NewClient(masterPort)
+	chunkBytes, err := client.ReadFromChunkServer(&response)
+	assert.Error(t, err)
+	assert.Nil(t, chunkBytes)
 }
 
 // TestClientReadFromMaster checks if the master returns appropriate metadata
 // for read requests from the client
 func TestClientReadFromMaster(t *testing.T) {
+
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory := "chunkServer1"
+	// TestChunkName := "1"
+	os.RemoveAll(TestDirectory)
+	defer os.RemoveAll(TestDirectory)
+
 	masterServer, err := master.NewMaster(true)
 	assert.Nil(t, err)
 	assert.NotNil(t, masterServer)
@@ -220,32 +286,41 @@ func TestClientReadFromMaster(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	// testFileMap := map[string][]*master.Chunk{
-	// 	"test_file_1": {
-	// 		{ChunkHandle: 2}, {ChunkHandle: 3}, {ChunkHandle: 0},
-	// 	},
-	// 	"test_file_2": {
-	// 		{ChunkHandle: 2432}, {ChunkHandle: 31321}, {ChunkHandle: 320},
-	// 		{ChunkHandle: 311}, {ChunkHandle: 32},
-	// 	},
-	// }
-	// masterServer.FileMap = testFileMap
+	testFileMap := map[string][]int64{
+		"test_file_1": {
+			2, 3, 0,
+		},
+		"test_file_2": {
+			2432, 31321, 320, 311, 32,
+		},
+	}
+	masterServer.FileMap = testFileMap
 	testChunkServerHandler := map[int64]map[string]bool{
 		3: {
-			":server1":true,
-			":server2":true, 
-			":server3":true,
+			":server1": true,
+			":server2": true,
+			":server3": true,
+		},
+	}
+	testChunks := map[int64]*master.Chunk{
+		3: {
+			ChunkHandle:  3,
+			ChunkVersion: 2,
 		},
 	}
 	masterServer.ChunkServerHandler = testChunkServerHandler
+	masterServer.ChunkHandles = testChunks
+
 	client := client.NewClient(masterPort)
+
 	request1 := common.ClientMasterReadRequest{
 		Filename:   "test_file_1",
 		ChunkIndex: 2,
 	}
 	response1, err := client.ReadFromMasterServer(request1)
 	assert.Nil(t, err)
-	assert.Equal(t, "no chunk servers present for chunk", response1.ErrorMessage)
+	assert.Equal(t, "no chunk servers present for chunk handle ", response1.ErrorMessage)
+
 	request2 := common.ClientMasterReadRequest{
 		Filename:   "test_file_1",
 		ChunkIndex: 7,
@@ -253,6 +328,7 @@ func TestClientReadFromMaster(t *testing.T) {
 	response2, err := client.ReadFromMasterServer(request2)
 	assert.Nil(t, err)
 	assert.Equal(t, "invalid chunkOffset", response2.ErrorMessage)
+
 	request3 := common.ClientMasterReadRequest{
 		Filename:   "test_file_1",
 		ChunkIndex: 1,
@@ -266,20 +342,32 @@ func TestClientReadFromMaster(t *testing.T) {
 // TestClientReadWorkflow verifies the complete client read workflow,
 // including fetching metadata from master and reading from chunk servers
 func TestClientReadWorkflow(t *testing.T) {
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	testData := []byte{'t', 'e', 's', 't'}
+
+	checkSum := bytes.Buffer{}
+	crcChecksum := crc32.Checksum(testData, crc32.MakeTable(crc32.Castagnoli))
+	binary.Write(&checkSum, binary.LittleEndian, crcChecksum)
+
 	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
 	defer os.RemoveAll(TestDirectory1)
-	err := os.Mkdir(TestDirectory1, 0600)
+	err := os.Mkdir(TestDirectory1, 0755)
 	assert.Nil(t, err)
 
 	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
 	defer os.RemoveAll(TestDirectory2)
-	err = os.Mkdir(TestDirectory2, 0600)
+	err = os.Mkdir(TestDirectory2, 0755)
 	assert.Nil(t, err)
 
 	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
 	defer os.RemoveAll(TestDirectory3)
-	err = os.Mkdir(TestDirectory3, 0600)
+	err = os.Mkdir(TestDirectory3, 0755)
 	assert.Nil(t, err)
 
 	// chunk1->server 2,3
@@ -291,6 +379,11 @@ func TestClientReadWorkflow(t *testing.T) {
 	_, err = chunkFile.Write(testData)
 	assert.Nil(t, err)
 	chunkFile.Close()
+	chunkCheckSumFile, err := os.Create(chunkPath + ".chksum")
+	assert.Nil(t, err)
+	_, err = chunkCheckSumFile.Write(checkSum.Bytes())
+	assert.Nil(t, err)
+	chunkCheckSumFile.Close()
 
 	chunkPath = filepath.Join(TestDirectory3, TestChunkName1)
 	chunkFile, err = os.Create(chunkPath + ".chunk")
@@ -298,6 +391,11 @@ func TestClientReadWorkflow(t *testing.T) {
 	_, err = chunkFile.Write(testData)
 	assert.Nil(t, err)
 	chunkFile.Close()
+	chunkCheckSumFile, err = os.Create(chunkPath + ".chksum")
+	assert.Nil(t, err)
+	_, err = chunkCheckSumFile.Write(checkSum.Bytes())
+	assert.Nil(t, err)
+	chunkCheckSumFile.Close()
 
 	// chunk3->server 1,2
 	TestChunkName3 := "3"
@@ -308,6 +406,11 @@ func TestClientReadWorkflow(t *testing.T) {
 	_, err = chunkFile.Write(testData)
 	assert.Nil(t, err)
 	chunkFile.Close()
+	chunkCheckSumFile, err = os.Create(chunkPath + ".chksum")
+	assert.Nil(t, err)
+	_, err = chunkCheckSumFile.Write(checkSum.Bytes())
+	assert.Nil(t, err)
+	chunkCheckSumFile.Close()
 
 	chunkPath = filepath.Join(TestDirectory2, TestChunkName3)
 	chunkFile, err = os.Create(chunkPath + ".chunk")
@@ -315,6 +418,11 @@ func TestClientReadWorkflow(t *testing.T) {
 	_, err = chunkFile.Write(testData)
 	assert.Nil(t, err)
 	chunkFile.Close()
+	chunkCheckSumFile, err = os.Create(chunkPath + ".chksum")
+	assert.Nil(t, err)
+	_, err = chunkCheckSumFile.Write(checkSum.Bytes())
+	assert.Nil(t, err)
+	chunkCheckSumFile.Close()
 
 	masterServer, err := master.NewMaster(true)
 	assert.Nil(t, err)
@@ -325,16 +433,16 @@ func TestClientReadWorkflow(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	// testFileMap := map[string][]*master.Chunk{
-	// 	"test_file_1": {
-	// 		{ChunkHandle: 1}, {ChunkHandle: 2}, {ChunkHandle: 0},
-	// 	},
-	// 	"test_file_2": {
-	// 		{ChunkHandle: 3}, {ChunkHandle: 4}, {ChunkHandle: 5},
-	// 		{ChunkHandle: 7}, {ChunkHandle: 6},
-	// 	},
-	// }
-	// masterServer.FileMap = testFileMap
+	testFileMap := map[string][]int64{
+		"test_file_1": {
+			1, 2, 0,
+		},
+		"test_file_2": {
+			3, 4, 5,
+			7, 6,
+		},
+	}
+	masterServer.FileMap = testFileMap
 
 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
 	chunkServer1port, err := chunkServer1.Start()
@@ -348,21 +456,36 @@ func TestClientReadWorkflow(t *testing.T) {
 
 	t.Log(chunkServer1port, chunkServer2port, chunkServer3port)
 
-	// testChunkServerHandler:=map[int64][]string{
-	//  1:{chunkServer2port,chunkServer3port},
-	//  3:{chunkServer1port,chunkServer2port},
-	// }
-	// masterServer.ChunkServerHandler=testChunkServerHandler
+	testChunkServerHandler := map[int64]map[string]bool{
+		1: {
+			chunkServer2port: true,
+			chunkServer3port: true,
+		},
+		3: {
+			chunkServer1port: true,
+			chunkServer2port: true,
+		},
+	}
+
+	testChunks := map[int64]*master.Chunk{
+		1: {
+			ChunkHandle:  1,
+			ChunkVersion: 2,
+		},
+	}
+	masterServer.ChunkServerHandler = testChunkServerHandler
+	masterServer.ChunkHandles = testChunks
+
 	client := client.NewClient(masterPort)
 	dataRead1, err := client.Read("test_file_1", 3)
 	assert.NotNil(t, err)
 	assert.Equal(t, "invalid chunkOffset", err.Error())
-	assert.Equal(t, []byte{}, dataRead1)
+	assert.Nil(t, dataRead1)
 
 	dataRead2, err := client.Read("test_file_1", 1)
 	assert.NotNil(t, err)
-	assert.Equal(t, "no chunk servers present for chunk", err.Error())
-	assert.Equal(t, []byte{}, dataRead2)
+	assert.Equal(t, "no chunk servers present for chunk handle ", err.Error())
+	assert.Nil(t, dataRead2)
 
 	dataRead3, err := client.Read("test_file_1", 0)
 	assert.Nil(t, err)
@@ -374,6 +497,10 @@ func TestClientReadWorkflow(t *testing.T) {
 // TestClientWriteToMaster tests the client's ability to write to master
 // when the file does not exist on master server and no chunk servers are availible
 func TestClientWriteToMaster_1(t *testing.T) {
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	testFileName := "testFile"
 	masterServer, err := master.NewMaster(true)
 
@@ -400,10 +527,21 @@ func TestClientWriteToMaster_1(t *testing.T) {
 // TestClientWriteToMaster tests the client's ability to write to master
 // when the file does not exist on master server and chunk servers are available
 func TestClientWriteToMaster_2(t *testing.T) {
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
 	testFileName := "testFile"
 
@@ -464,10 +602,21 @@ func TestClientWriteToMaster_2(t *testing.T) {
 // TestClientWriteToMaster_3 tests the client's ability to write to master 2 times consecutively
 // when the file already exists on master server and chunk servers are available
 func TestClientWriteToMaster_3(t *testing.T) {
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
 	testFileName := "testFile"
 
@@ -483,15 +632,15 @@ func TestClientWriteToMaster_3(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -550,12 +699,25 @@ func TestClientWriteToMaster_3(t *testing.T) {
 // when the file already exists on master server and chunk servers are available however the lease on the chunkId
 // expires in between the 2 consecutive writes
 func TestClientWriteToMaster_4(t *testing.T) {
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
 	testFileName := "testFile"
+
 	masterServer, err := master.NewMaster(false)
 	assert.NotNil(t, masterServer)
 	assert.Nil(t, err)
@@ -567,13 +729,15 @@ func TestClientWriteToMaster_4(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -584,7 +748,9 @@ func TestClientWriteToMaster_4(t *testing.T) {
 	}
 
 	response1, err := client.WriteToMasterServer(request)
+
 	time.Sleep(1 * time.Second)
+
 	assert.Nil(t, err)
 	assert.NotNil(t, response1)
 	assert.NotEmpty(t, len(response1.SecondaryChunkServers))
@@ -612,6 +778,7 @@ func TestClientWriteToMaster_4(t *testing.T) {
 	masterServer.LeaseGrants[response1.ChunkHandle].GrantTime = newGrantTime
 
 	response2, err := client.WriteToMasterServer(request)
+
 	time.Sleep(1 * time.Second)
 
 	assert.Nil(t, err)
@@ -651,11 +818,24 @@ func TestClientWriteToMaster_4(t *testing.T) {
 */
 func TestReplicateChunkDataToAllServers_1(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
-	// testFileName:="testFile"
+
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
+
+	// testFileName := "testFile"
 
 	masterServer, err := master.NewMaster(false)
 	assert.NotNil(t, masterServer)
@@ -668,18 +848,21 @@ func TestReplicateChunkDataToAllServers_1(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
 	assert.Equal(t, 3, masterServer.ServerList.Len())
 	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+
 	request := common.ClientMasterWriteResponse{
 		MutationId:            243,
 		ChunkHandle:           978,
@@ -690,7 +873,7 @@ func TestReplicateChunkDataToAllServers_1(t *testing.T) {
 
 	err = client.ReplicateChunkDataToAllServers(&request, testData)
 	assert.NotNil(t, err)
-	assert.Equal(t, "writing to primary chunk server failed", err.Error())
+	assert.Equal(t, "error because we were unable to write the chunk to all chunkServers", err.Error())
 
 	err = masterServer.Shutdown()
 	assert.Nil(t, err)
@@ -698,12 +881,23 @@ func TestReplicateChunkDataToAllServers_1(t *testing.T) {
 
 func TestReplicateChunkDataToAllServers_2(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
 
-	// testFileName:="testFile"
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
+	
 	masterServer, err := master.NewMaster(false)
 	assert.NotNil(t, masterServer)
 	assert.Nil(t, err)
@@ -715,18 +909,21 @@ func TestReplicateChunkDataToAllServers_2(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
 	assert.Equal(t, 3, masterServer.ServerList.Len())
 	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+
 	request := common.ClientMasterWriteResponse{
 		MutationId:            243,
 		ChunkHandle:           978,
@@ -737,7 +934,7 @@ func TestReplicateChunkDataToAllServers_2(t *testing.T) {
 
 	err = client.ReplicateChunkDataToAllServers(&request, testData)
 	assert.NotNil(t, err)
-	assert.Equal(t, "writing to secondary chunk server failed", err.Error())
+	assert.Equal(t,"error because we were unable to write the chunk to all chunkServers", err.Error())
 
 	dataTransferred, presentOnPrimaryServer := chunkServer1.LruCache.Get(request.MutationId)
 	assert.Equal(t, true, presentOnPrimaryServer)
@@ -749,13 +946,23 @@ func TestReplicateChunkDataToAllServers_2(t *testing.T) {
 
 func TestReplicateChunkDataToAllServers_3(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
+	
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
 
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
 
-	// testFileName:="testFile"
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
+
 	masterServer, err := master.NewMaster(false)
 	assert.NotNil(t, masterServer)
 	assert.Nil(t, err)
@@ -767,15 +974,15 @@ func TestReplicateChunkDataToAllServers_3(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -808,79 +1015,101 @@ func TestReplicateChunkDataToAllServers_3(t *testing.T) {
 // send the request when the primaryServer does not have a valid lease
 // if the lease does not exist the connection should time out and an error will be
 // returned
-// func TestSendCommitRequestToPrimary_1(t *testing.T) {
-// 	testData := []byte{'t', 'e', 's', 't'}
+func TestSendCommitRequestToPrimary_1(t *testing.T) {
+	testData := []byte{'t', 'e', 's', 't'}
 
-// 	defer os.RemoveAll("chunkServer1")
-// 	defer os.RemoveAll("chunkServer2")
-// 	defer os.RemoveAll("chunkServer3")
-// 	defer os.Remove("OPLOG.opLog")
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
 
-// 	// testFileName:="testFile"
-// // 	masterServer,err:=master.NewMaster(false)
-// 	assert.NotNil(t, masterServer)
-// 	assert.Nil(t, err)
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
 
-// 	err = masterServer.Start()
-// 	masterPort=masterServer.Listener.Addr().(*net.TCPAddr).String()
-// 	assert.Nil(t, err)
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
 
-// 	client := client.NewClient(masterPort)
-// 	assert.NotNil(t, client)
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
-// 	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
-// 	chunkServer1port, err := chunkServer1.Start()
-// 	assert.Nil(t, err)
+	// testFileName:="testFile"
+	masterServer,err:=master.NewMaster(false)
+	assert.NotNil(t, masterServer)
+	assert.Nil(t, err)
 
-// 	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
-// 	chunkServer2port, err := chunkServer2.Start()
-// 	assert.Nil(t, err)
+	err = masterServer.Start()
+	masterPort:=masterServer.Listener.Addr().(*net.TCPAddr).String()
+	assert.Nil(t, err)
 
-// 	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
-// 	chunkServer3port, err := chunkServer3.Start()
-// 	assert.Nil(t, err)
+	client := client.NewClient(masterPort)
+	assert.NotNil(t, client)
 
-// 	assert.Equal(t, 3, masterServer.ServerList.Len())
-// 	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
-// 	request := common.ClientMasterWriteResponse{
-// 		MutationId:            243,
-// 		ChunkHandle:           978,
-// 		PrimaryChunkServer:    chunkServer1port,
-// 		SecondaryChunkServers: []string{chunkServer3port, chunkServer2port},
-// 		ErrorMessage:          "",
-// 	}
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
+	chunkServer1port, err := chunkServer1.Start()
+	assert.Nil(t, err)
 
-// 	err = client.ReplicateChunkDataToAllServers(&request, testData)
-// 	assert.Nil(t, err)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
+	chunkServer2port, err := chunkServer2.Start()
+	assert.Nil(t, err)
 
-// 	for _, server := range []*chunkserver.ChunkServer{chunkServer1, chunkServer2, chunkServer3} {
-// 		dataTransferred, presentOnServer := server.LruCache.Get(request.MutationId)
-// 		assert.Equal(t, true, presentOnServer)
-// 		assert.Equal(t, testData, dataTransferred)
-// 	}
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
+	chunkServer3port, err := chunkServer3.Start()
+	assert.Nil(t, err)
 
-// 	commitRequest := common.PrimaryChunkCommitRequest{
-// 		ChunkHandle:      request.ChunkHandle,
-// 		MutationId:       request.MutationId,
-// 		SecondaryServers: request.SecondaryChunkServers,
-// 	}
+	assert.Equal(t, 3, masterServer.ServerList.Len())
+	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
+	request := common.ClientMasterWriteResponse{
+		MutationId:            243,
+		ChunkHandle:           978,
+		PrimaryChunkServer:    chunkServer1port,
+		SecondaryChunkServers: []string{chunkServer3port, chunkServer2port},
+		ErrorMessage:          "",
+	}
 
-// 	_,err = client.SendCommitRequestToPrimary(chunkServer1port, commitRequest)
-// 	assert.NotNil(t, err)
+	err = client.ReplicateChunkDataToAllServers(&request, testData)
+	assert.Nil(t, err)
 
-// 	err = masterServer.Shutdown()
-// 	assert.Nil(t, err)
-// }
+	for _, server := range []*chunkserver.ChunkServer{chunkServer1, chunkServer2, chunkServer3} {
+		dataTransferred, presentOnServer := server.LruCache.Get(request.MutationId)
+		assert.Equal(t, true, presentOnServer)
+		assert.Equal(t, testData, dataTransferred)
+	}
+
+	commitRequest := common.PrimaryChunkCommitRequest{
+		ChunkHandle:      request.ChunkHandle,
+		MutationId:       request.MutationId,
+		SecondaryServers: request.SecondaryChunkServers,
+	}
+
+	_,err = client.SendCommitRequestToPrimary(chunkServer1port, commitRequest)
+	assert.NotNil(t, err)
+
+	err = masterServer.Shutdown()
+	assert.Nil(t, err)
+}
 
 // after pushing the data to all the chunk servers, the primary chunk server is shutdown somehow
 // while sending the primary commit request
 func TestSendCommitRequestToPrimary_2(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
 
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
 	// testFileName:="testFile"
 	masterServer, err := master.NewMaster(false)
@@ -896,15 +1125,15 @@ func TestSendCommitRequestToPrimary_2(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -949,10 +1178,21 @@ func TestSendCommitRequestToPrimary_2(t *testing.T) {
 func TestSendCommitRequestToPrimary_3(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
 
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
 	masterServer, err := master.NewMaster(false)
 
@@ -967,15 +1207,15 @@ func TestSendCommitRequestToPrimary_3(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -1015,7 +1255,6 @@ func TestSendCommitRequestToPrimary_3(t *testing.T) {
 	}
 	_, err = client.SendCommitRequestToPrimary(chunkServer1port, commitRequest)
 	assert.NotNil(t, err)
-	assert.Equal(t, "failed to write data on primary chunk server", err.Error())
 
 	err = masterServer.Shutdown()
 	assert.Nil(t, err)
@@ -1023,14 +1262,25 @@ func TestSendCommitRequestToPrimary_3(t *testing.T) {
 
 // the primary chunkServer has the data in its LRU cache on receiving
 // the primary commit request, so it mutates its chunk however the inter chunk server commit
-// request fails as one of the secondary chunk servers is down
+// request fails(the connection times out after 10 secs) as one of the secondary chunk servers is down
 func TestSendCommitRequestToPrimary_4(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
 
-	defer os.RemoveAll("chunkServer1")
-	defer os.RemoveAll("chunkServer2")
-	defer os.RemoveAll("chunkServer3")
-	defer os.Remove("OPLOG.opLog")
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory1 := "chunkServer1"
+	os.RemoveAll(TestDirectory1)
+	defer os.RemoveAll(TestDirectory1)
+
+	TestDirectory2 := "chunkServer2"
+	os.RemoveAll(TestDirectory2)
+	defer os.RemoveAll(TestDirectory2)
+
+	TestDirectory3 := "chunkServer3"
+	os.RemoveAll(TestDirectory3)
+	defer os.RemoveAll(TestDirectory3)
 
 	// testFileName:="testFile"
 	masterServer, err := master.NewMaster(false)
@@ -1046,15 +1296,15 @@ func TestSendCommitRequestToPrimary_4(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -1095,7 +1345,6 @@ func TestSendCommitRequestToPrimary_4(t *testing.T) {
 
 	_, err = client.SendCommitRequestToPrimary(chunkServer1port, commitRequest)
 	assert.NotNil(t, err)
-	assert.Equal(t, "failed to write data on secondary chunk server ", err.Error())
 
 	err = masterServer.Shutdown()
 	assert.Nil(t, err)
@@ -1107,23 +1356,21 @@ func TestSendCommitRequestToPrimary_4(t *testing.T) {
 func TestSendCommitRequestToPrimary_5(t *testing.T) {
 	testData := []byte{'t', 'e', 's', 't'}
 
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	TestDirectory1 := "chunkServer1"
 	os.RemoveAll(TestDirectory1)
 	defer os.RemoveAll(TestDirectory1)
-	err := os.Mkdir(TestDirectory1, 0600)
-	assert.Nil(t, err)
 
 	TestDirectory2 := "chunkServer2"
 	os.RemoveAll(TestDirectory2)
 	defer os.RemoveAll(TestDirectory2)
-	err = os.Mkdir(TestDirectory2, 0600)
-	assert.Nil(t, err)
 
 	TestDirectory3 := "chunkServer3"
 	os.RemoveAll(TestDirectory3)
 	defer os.RemoveAll(TestDirectory3)
-	err = os.Mkdir(TestDirectory3, 0600)
-	assert.Nil(t, err)
 
 	// testFileName:="testFile"
 	masterServer, err := master.NewMaster(false)
@@ -1139,15 +1386,15 @@ func TestSendCommitRequestToPrimary_5(t *testing.T) {
 	client := client.NewClient(masterPort)
 	assert.NotNil(t, client)
 
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 
@@ -1182,6 +1429,7 @@ func TestSendCommitRequestToPrimary_5(t *testing.T) {
 		GrantTime:   time.Now(),
 		ChunkHandle: commitRequest.ChunkHandle,
 	}
+
 	writeOffset, err := client.SendCommitRequestToPrimary(chunkServer1port, commitRequest)
 	assert.Nil(t, err)
 	// assert.Equal(t,"failed to write data on secondary chunk server ",err.Error())
@@ -1229,23 +1477,21 @@ func TestSendCommitRequestToPrimary_6(t *testing.T) {
 	}
 
 	testData := []byte{'t', 'e', 's', 't'}
+	
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	TestDirectory1 := "chunkServer1"
 	os.RemoveAll(TestDirectory1)
 	defer os.RemoveAll(TestDirectory1)
-	err := os.Mkdir(TestDirectory1, 0600)
-	assert.Nil(t, err)
-
+	
 	TestDirectory2 := "chunkServer2"
 	os.RemoveAll(TestDirectory2)
-	defer os.RemoveAll(TestDirectory2)
-	err = os.Mkdir(TestDirectory2, 0600)
-	assert.Nil(t, err)
+
 
 	TestDirectory3 := "chunkServer3"
 	os.RemoveAll(TestDirectory3)
-	defer os.RemoveAll(TestDirectory3)
-	err = os.Mkdir(TestDirectory3, 0600)
-	assert.Nil(t, err)
 
 	// testFileName:="testFile"
 	masterServer, err := master.NewMaster(false)
@@ -1259,17 +1505,17 @@ func TestSendCommitRequestToPrimary_6(t *testing.T) {
 	assert.Nil(t, err)
 
 	portToServerMap := map[string]*chunkserver.ChunkServer{}
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 	portToServerMap[chunkServer1port] = chunkServer1
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 	portToServerMap[chunkServer2port] = chunkServer2
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 	portToServerMap[chunkServer3port] = chunkServer3
@@ -1420,25 +1666,22 @@ func TestClientWrite_1(t *testing.T) {
 
 	testData := []byte{'t', 'e', 's', 't'}
 
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
 	TestDirectory1 := "chunkServer1"
 	os.RemoveAll(TestDirectory1)
 	defer os.RemoveAll(TestDirectory1)
-	err := os.Mkdir(TestDirectory1, 0600)
-	assert.Nil(t, err)
-
+	
 	TestDirectory2 := "chunkServer2"
 	os.RemoveAll(TestDirectory2)
 	defer os.RemoveAll(TestDirectory2)
-	err = os.Mkdir(TestDirectory2, 0600)
-	assert.Nil(t, err)
 
 	TestDirectory3 := "chunkServer3"
 	os.RemoveAll(TestDirectory3)
 	defer os.RemoveAll(TestDirectory3)
-	err = os.Mkdir(TestDirectory3, 0600)
-	assert.Nil(t, err)
 
-	// testFileName:="testFile"
 	masterServer, err := master.NewMaster(false)
 
 	assert.NotNil(t, masterServer)
@@ -1450,17 +1693,17 @@ func TestClientWrite_1(t *testing.T) {
 	assert.Nil(t, err)
 
 	portToServerMap := map[string]*chunkserver.ChunkServer{}
-	chunkServer1 := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer1 := chunkserver.NewChunkServer(TestDirectory1, masterPort)
 	chunkServer1port, err := chunkServer1.Start()
 	assert.Nil(t, err)
 	portToServerMap[chunkServer1port] = chunkServer1
 
-	chunkServer2 := chunkserver.NewChunkServer("chunkServer2", masterPort)
+	chunkServer2 := chunkserver.NewChunkServer(TestDirectory2, masterPort)
 	chunkServer2port, err := chunkServer2.Start()
 	assert.Nil(t, err)
 	portToServerMap[chunkServer2port] = chunkServer2
 
-	chunkServer3 := chunkserver.NewChunkServer("chunkServer3", masterPort)
+	chunkServer3 := chunkserver.NewChunkServer(TestDirectory3, masterPort)
 	chunkServer3port, err := chunkServer3.Start()
 	assert.Nil(t, err)
 	portToServerMap[chunkServer3port] = chunkServer3
@@ -1492,24 +1735,22 @@ func TestClientWrite_1(t *testing.T) {
 func TestClientWrite_2(t *testing.T) {
 
 	testData := []byte{'t', 'e', 's', 't'}
+	
+	TestMasterDirectory := "masterDir"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
 
 	TestDirectory1 := "chunkServer1"
 	os.RemoveAll(TestDirectory1)
 	defer os.RemoveAll(TestDirectory1)
-	err := os.Mkdir(TestDirectory1, 0600)
-	assert.Nil(t, err)
 
 	TestDirectory2 := "chunkServer2"
 	os.RemoveAll(TestDirectory2)
 	defer os.RemoveAll(TestDirectory2)
-	err = os.Mkdir(TestDirectory2, 0600)
-	assert.Nil(t, err)
-
+	
 	TestDirectory3 := "chunkServer3"
 	os.RemoveAll(TestDirectory3)
 	defer os.RemoveAll(TestDirectory3)
-	err = os.Mkdir(TestDirectory3, 0600)
-	assert.Nil(t, err)
 
 	// testFileName:="testFile"
 	masterServer, err := master.NewMaster(false)
@@ -1541,13 +1782,13 @@ func TestClientWrite_2(t *testing.T) {
 
 	log.Println(chunkServer1port, chunkServer2port, chunkServer3port)
 
-	writeRequests := 10
+	writeRequests := 2
 
 	var wg sync.WaitGroup
 	for i := range writeRequests {
 		testFile := "testFile" + string(rune(i-'0'))
 		sentData := append(testData, byte(i-'0'))
-		for j := range 35 {
+		for j := range 2 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

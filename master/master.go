@@ -4,6 +4,8 @@ import (
 	"container/heap"
 	"errors"
 	"io/fs"
+
+	// "io/fs"
 	"log"
 	"net"
 	"os"
@@ -19,23 +21,23 @@ import (
 
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
-	MasterDirectory string
-	inTestMode             bool
-	shutDownChan           chan struct{}
-	Listener               net.Listener
-	ChunkServerConnections []*ChunkServerConnection
-	opLogger               *OpLogger
-	LastCheckpointTime     time.Time
+	MasterDirectory           string
+	inTestMode                bool
+	shutDownChan              chan struct{}
+	Listener                  net.Listener
+	ChunkServerConnections    []*ChunkServerConnection
+	opLogger                  *OpLogger
+	LastCheckpointTime        time.Time
 	VersionNumberSynchronizer map[string]*IncreaseVersionNumberSynchronizer
-	LastLogSwitchTime      time.Time
-	ServerList             *ServerList
-	idGenerator            *snowflake.Node
-	Port                   string
-	LeaseGrants            map[int64]*Lease
-	FileMap                map[string][]int64        // maps file names to array of chunkIds
-	ChunkHandles           map[int64]*Chunk          // contains all the chunkHandles of all the non-deleted files
-	ChunkServerHandler     map[int64]map[string]bool // maps chunkIds to the chunkServer Ports which store those chunks
-	mu                     sync.RWMutex
+	LastLogSwitchTime         time.Time
+	ServerList                *ServerList
+	idGenerator               *snowflake.Node
+	Port                      string
+	LeaseGrants               map[int64]*Lease
+	FileMap                   map[string][]int64        // maps file names to array of chunkIds
+	ChunkHandles              map[int64]*Chunk          // contains all the chunkHandles of all the non-deleted files
+	ChunkServerHandler        map[int64]map[string]bool // maps chunkIds to the chunkServer Ports which store those chunks
+	mu                        sync.RWMutex
 }
 
 // each Chunk contains its ChunkHandle and its size
@@ -49,9 +51,9 @@ type IncreaseVersionNumberSynchronizer struct {
 	ErrorChan chan bool
 }
 type ChunkServerConnection struct {
-	Port string
-	Conn net.Conn
-	Wg sync.WaitGroup
+	Port      string
+	Conn      net.Conn
+	Wg        sync.WaitGroup
 	ErrorChan chan int
 }
 
@@ -70,36 +72,42 @@ func NewMaster(inTestMode bool) (*Master, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	log.Println("intialized snowflake ")
 	pq := &ServerList{}
 	heap.Init(pq)
 
 	master := &Master{
-		MasterDirectory: "masterDir",
+		MasterDirectory:        "masterDir",
 		inTestMode:             inTestMode,
 		ChunkServerConnections: make([]*ChunkServerConnection, 0),
 		// currentOpLog: opLogFile,
-		ServerList:         pq,
-		idGenerator:        node,
-		FileMap:            make(map[string][]int64),
-		ChunkHandles:       make(map[int64]*Chunk),
-		ChunkServerHandler: make(map[int64]map[string]bool),
-		LeaseGrants:        make(map[int64]*Lease),
-		VersionNumberSynchronizer:make(map[string]*IncreaseVersionNumberSynchronizer),
+		ServerList:                pq,
+		idGenerator:               node,
+		FileMap:                   make(map[string][]int64),
+		ChunkHandles:              make(map[int64]*Chunk),
+		ChunkServerHandler:        make(map[int64]map[string]bool),
+		LeaseGrants:               make(map[int64]*Lease),
+		VersionNumberSynchronizer: make(map[string]*IncreaseVersionNumberSynchronizer),
 	}
 
 	_, err = os.ReadDir(master.MasterDirectory)
 	if err != nil {
-		log.Println(err)
-		var pathErr *fs.PathError
+		log.Println("this is being logged", err)
+		var pathErr *fs.PathError // Note the pointer type
 		if !errors.As(err, &pathErr) {
+			// This means it IS a path error
+
+			log.Println("this is also being logged", err)
+			return nil, err
+		}
+		err = os.Mkdir(master.MasterDirectory, 0755)
+		if err!=nil{
 			return nil,err
 		}
-		err = os.Mkdir(master.MasterDirectory, 0600)
-		return nil,err
 	}
 
-
-
+	log.Println("initializing opLogger")
 	opLogger, err := NewOpLogger(master)
 	if err != nil {
 		return nil, err
@@ -346,10 +354,10 @@ func (master *Master) handleChunkServerHeartbeatResponse(connection *ChunkServer
 		if isChunkDeleted {
 			chunksToBeDeleted = append(chunksToBeDeleted, chunk.ChunkHandle)
 		}
-		if isChunkVersionOutdated{
-			delete(master.ChunkServerHandler[chunk.ChunkHandle],connection.Port)
-		}else{
-			master.ChunkServerHandler[chunk.ChunkHandle][connection.Port]=true
+		if isChunkVersionOutdated {
+			delete(master.ChunkServerHandler[chunk.ChunkHandle], connection.Port)
+		} else {
+			master.ChunkServerHandler[chunk.ChunkHandle][connection.Port] = true
 		}
 	}
 	master.mu.Unlock()
@@ -388,12 +396,17 @@ func (master *Master) handleChunkServerMasterHandshake(connection *ChunkServerCo
 
 	// We create a ChunkServerConnection object for the chunkServer and append it to the list of connections
 	// The ChunkServerConnection object contains the port and the connection to the chunkServer
-	connection.Port=handshake.Port
+	connection.Port = handshake.Port
 	master.ChunkServerConnections = append(master.ChunkServerConnections, connection)
 
 	// the chunkServer includes all the chunkHandles it has in its handshake
 	// the master appends the port of the chunkServer in the mapping from chunkHandle to chunkServers
 	for _, chunkHandle := range handshake.ChunkHandles {
+
+		_,present:=master.ChunkServerHandler[chunkHandle]
+		if !present{
+			master.ChunkServerHandler[chunkHandle]=make(map[string]bool)
+		}
 		master.ChunkServerHandler[chunkHandle][handshake.Port] = true
 	}
 
@@ -507,9 +520,9 @@ func (master *Master) Start() error {
 				log.Printf("Failed to accept connection: %v", err)
 				continue
 			}
-			chunkServerConnection:=&ChunkServerConnection{
+			chunkServerConnection := &ChunkServerConnection{
 				Conn: conn,
-				Wg: sync.WaitGroup{},
+				Wg:   sync.WaitGroup{},
 			}
 			go master.handleConnection(chunkServerConnection)
 		}
@@ -543,7 +556,7 @@ func (master *Master) handleCreateNewChunkRequest(conn net.Conn, messageBytes []
 	return err
 }
 func (master *Master) handleConnection(connection *ChunkServerConnection) {
-	conn:=connection.Conn
+	conn := connection.Conn
 	defer conn.Close()
 
 	for {

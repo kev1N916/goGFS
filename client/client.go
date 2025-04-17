@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -157,7 +158,9 @@ func (client *Client) ReadFromChunkServer(readResponse *common.ClientMasterReadR
 		// not on its server , if chunkPresent=1 then its is present otherwise it is not
 		chunkPresent := make([]byte, 1)
 		_, err := conn.Read(chunkPresent)
+		log.Println(chunkPresent[0])
 		if err != nil {
+			log.Println("connection closed",err.Error())
 			conn.Close()
 			client.logger.Warningf(err.Error())
 			// return nil,err
@@ -593,14 +596,14 @@ func (client *Client) ReplicateChunkDataToAllServers(writeResponse *common.Clien
 	// write chunk to primary server
 	err := client.WriteChunkToChunkServer(writeResponse.PrimaryChunkServer, request)
 	if err != nil {
-		return err
+		return errors.New("error because we were unable to write the chunk to all chunkServers")
 	}
 
 	// write chunk to secondary chunk servers
 	for i := range writeResponse.SecondaryChunkServers {
 		err = client.WriteChunkToChunkServer(writeResponse.SecondaryChunkServers[i], request)
 		if err != nil {
-			return err
+			return errors.New("error because we were unable to write the chunk to all chunkServers")
 		}
 	}
 

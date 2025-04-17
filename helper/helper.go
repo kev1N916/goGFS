@@ -105,7 +105,9 @@ func OpenExistingFile(path string) (*os.File, error) {
 
 func OpenTruncFile(path string) (*os.File, error) {
 	flags := os.O_RDWR | os.O_CREATE | os.O_TRUNC
-	fp, err := os.OpenFile(path, flags, 0600)
+
+	log.Println("3")
+	fp, err := os.OpenFile(path, flags, 0666)
 	if err != nil {
 		return nil, err
 	}

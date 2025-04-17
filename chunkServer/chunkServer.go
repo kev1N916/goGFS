@@ -41,10 +41,10 @@ type ChunkCheckSum struct {
 	crcTable *crc32.Table
 }
 
-// type Chunk struct {
-// 	mu            *sync.Mutex
-// 	versionNumber atomic.Int64
-// }
+//	type Chunk struct {
+//		mu            *sync.Mutex
+//		versionNumber atomic.Int64
+//	}
 type ChunkServer struct {
 	CheckSums                  map[int64][]byte
 	checkSummer                *ChunkCheckSum
@@ -75,6 +75,7 @@ func NewChunkServer(chunkDirectory string, masterPort string) *ChunkServer {
 	}
 	logger := common.DefaultLogger(common.ERROR)
 	chunkServer := &ChunkServer{
+		ChunkVersionNumbers:  make(map[int64]int64),
 		CheckSums:            make(map[int64][]byte),
 		checkSummer:          checkSummer,
 		logger:               logger,
@@ -391,6 +392,8 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 
 	chunk, err := chunkServer.openChunk(chunkHandle)
 	if err != nil {
+
+		log.Println("error while opening the chunk")
 		// if there is an error in opening the chunk then we again return an error to the primary
 		return
 	}
@@ -405,6 +408,7 @@ func (chunkServer *ChunkServer) handleChunkPrimaryCommit(chunkHandle int64, requ
 	// returns a buffer containing the entire chunk data
 	chunkBuffer, isVerified, err := chunkServer.verifyChunkCheckSum(chunk, chunkHandle)
 	if err != nil || !isVerified {
+		log.Println("error while verifying the chunk checksum")
 		return
 	}
 
@@ -825,7 +829,7 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 
 		switch messageType {
 		case common.PrimaryChunkCommitRequestType:
-			err = helper.AddTimeoutForTheConnection(conn, 180*time.Second)
+			err = helper.AddTimeoutForTheConnection(conn, 10*time.Second)
 			if err != nil {
 				return
 			}
@@ -883,10 +887,14 @@ func (chunkServer *ChunkServer) handleConnection(conn net.Conn) {
 			chunkServer.handleMasterIncreaseVersionNumberRequest(messageBody)
 		case common.MasterChunkServerLeaseRequestType:
 			err = chunkServer.handleMasterLeaseRequest(messageBody)
-			chunkServer.logger.Errorf(err.Error())
+			if err != nil {
+				chunkServer.logger.Errorf(err.Error())
+			}
 		case common.MasterChunkServerCloneRequestType:
 			err = chunkServer.handleMasterCloneRequest(messageBody)
-			chunkServer.logger.Errorf(err.Error())
+			if err != nil {
+				chunkServer.logger.Errorf(err.Error())
+			}
 		default:
 			log.Println("Received unknown request type:", messageType)
 		}

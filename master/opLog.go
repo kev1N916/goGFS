@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -45,26 +47,49 @@ func NewOpLogger(master *Master) (*OpLogger, error) {
 		master: master,
 	}
 
-	opLogFile, err := os.OpenFile(filepath.Join(opLog.master.MasterDirectory + OpLogFileName), os.O_RDWR, 0)
+	log.Println("opening opLog file")
+	fileName := filepath.Join(opLog.master.MasterDirectory, OpLogFileName)
+	log.Println(fileName)
+	opLogFile, err := os.OpenFile(fileName, os.O_RDWR, 0)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		log.Println("opLog file does not exist")
+
+		var pathError *fs.PathError
+		if !errors.As(err, &pathError) {
+			log.Println("why are we reaching here")
 			return nil, err
 		}
+
+		log.Println("rewriting opLog")
 		opLogFile, err = opLog.rewriteOpLog()
 		if err != nil {
 			return nil, err
 		}
 	}
 	opLog.currentOpLog = opLogFile
+
+	log.Println("finished initializing opLog")
 	return opLog, nil
 }
 
 // tested
 func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
-	opLogRewriteFile, err := helper.OpenTruncFile(filepath.Join(opLog.master.MasterDirectory + OpLogRewriteFileName))
+
+	log.Println("1")
+	fileName := filepath.Join(opLog.master.MasterDirectory, OpLogRewriteFileName)
+	// dirName:=filepath.Dir(fileName)
+	// err := os.MkdirAll(dirName, 0755)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	log.Println(fileName)
+	opLogRewriteFile, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
+		log.Println("getting stuck here", err)
 		return nil, err
 	}
+	log.Println("2")
+
 	_, err = opLogRewriteFile.Write(magicText[:])
 	if err != nil {
 		opLogRewriteFile.Close()
@@ -72,11 +97,6 @@ func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 	}
 	if err := opLogRewriteFile.Sync(); err != nil {
 		opLogRewriteFile.Close()
-		return nil, err
-	}
-
-	// In Windows the files should be closed before doing a Rename.
-	if err = opLogRewriteFile.Close(); err != nil {
 		return nil, err
 	}
 
@@ -97,6 +117,8 @@ func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 		fp.Close()
 		return nil, err
 	}
+
+	log.Println("finished rewriting opLog")
 	return fp, err
 }
 
