@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -40,27 +41,27 @@ const (
 
 // tested
 func NewOpLogger(master *Master) (*OpLogger, error) {
-	opLogger := &OpLogger{
+	opLog := &OpLogger{
 		master: master,
 	}
 
-	opLogFile, err := os.OpenFile(OpLogFileName, os.O_RDWR, 0)
+	opLogFile, err := os.OpenFile(filepath.Join(opLog.master.MasterDirectory + OpLogFileName), os.O_RDWR, 0)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
-		opLogFile, err = opLogger.rewriteOpLog()
+		opLogFile, err = opLog.rewriteOpLog()
 		if err != nil {
 			return nil, err
 		}
 	}
-	opLogger.currentOpLog = opLogFile
-	return opLogger, nil
+	opLog.currentOpLog = opLogFile
+	return opLog, nil
 }
 
 // tested
 func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
-	opLogRewriteFile, err := helper.OpenTruncFile(OpLogRewriteFileName)
+	opLogRewriteFile, err := helper.OpenTruncFile(filepath.Join(opLog.master.MasterDirectory + OpLogRewriteFileName))
 	if err != nil {
 		return nil, err
 	}
@@ -79,10 +80,12 @@ func (opLog *OpLogger) rewriteOpLog() (*os.File, error) {
 		return nil, err
 	}
 
-	if err := os.Rename(OpLogRewriteFileName, OpLogFileName); err != nil {
+	if err := os.Rename(
+		filepath.Join(opLog.master.MasterDirectory, OpLogRewriteFileName),
+		filepath.Join(opLog.master.MasterDirectory, OpLogFileName)); err != nil {
 		return nil, err
 	}
-	fp, err := helper.OpenExistingFile(OpLogFileName)
+	fp, err := helper.OpenExistingFile(filepath.Join(opLog.master.MasterDirectory, OpLogFileName))
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +112,7 @@ func (opLogger *OpLogger) writeToOpLog(op Operation) error {
 	case common.ClientMasterDeleteRequestType:
 		logLine = fmt.Sprintf("%s:%s:%d:%s\n", "TempDelete", op.File, op.ChunkHandle, op.NewFileName)
 	case common.MasterChunkServerIncreaseVersionNumberRequestType:
-		logLine = fmt.Sprintf("%s:%s:%d:%d\n", "SetVersionNumber",op.File, op.ChunkHandle, op.NewVersionNumber)
+		logLine = fmt.Sprintf("%s:%s:%d:%d\n", "SetVersionNumber", op.File, op.ChunkHandle, op.NewVersionNumber)
 	default:
 		return errors.New("operation type not defined correctly")
 	}
@@ -161,7 +164,7 @@ func (opLogger *OpLogger) readOpLog() error {
 				chunkHandle, _ := strconv.ParseInt(parts[2], 10, 64)
 				newVersionNumber, _ := strconv.ParseInt(parts[3], 10, 64)
 
-				opLogger.master.setChunkVersionNumber(chunkHandle,newVersionNumber)
+				opLogger.master.setChunkVersionNumber(chunkHandle, newVersionNumber)
 			default:
 				return errors.New("undefined commands")
 			}

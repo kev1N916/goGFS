@@ -2,8 +2,11 @@ package master
 
 import (
 	"container/heap"
+	"errors"
+	"io/fs"
 	"log"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -14,10 +17,9 @@ import (
 	"github.com/involk-secure-1609/goGFS/helper"
 )
 
-const masterDir = "masterDir"
-
 // Master represents the master server that manages files and chunk handlers
 type Master struct {
+	MasterDirectory string
 	inTestMode             bool
 	shutDownChan           chan struct{}
 	Listener               net.Listener
@@ -70,7 +72,9 @@ func NewMaster(inTestMode bool) (*Master, error) {
 	}
 	pq := &ServerList{}
 	heap.Init(pq)
+
 	master := &Master{
+		MasterDirectory: "masterDir",
 		inTestMode:             inTestMode,
 		ChunkServerConnections: make([]*ChunkServerConnection, 0),
 		// currentOpLog: opLogFile,
@@ -82,6 +86,20 @@ func NewMaster(inTestMode bool) (*Master, error) {
 		LeaseGrants:        make(map[int64]*Lease),
 		VersionNumberSynchronizer:make(map[string]*IncreaseVersionNumberSynchronizer),
 	}
+
+	_, err = os.ReadDir(master.MasterDirectory)
+	if err != nil {
+		log.Println(err)
+		var pathErr *fs.PathError
+		if !errors.As(err, &pathErr) {
+			return nil,err
+		}
+		err = os.Mkdir(master.MasterDirectory, 0600)
+		return nil,err
+	}
+
+
+
 	opLogger, err := NewOpLogger(master)
 	if err != nil {
 		return nil, err

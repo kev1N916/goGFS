@@ -5,10 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"math/rand/v2"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -521,6 +523,8 @@ func (master *Master) startBackgroundCheckpoint() {
 
 // tested cuz readCheckpoint and readOpLog are tested
 func (master *Master) recover() error {
+
+	
 	err := master.readCheckpoint()
 	if err != nil {
 		return err
@@ -537,13 +541,17 @@ func (master *Master) recover() error {
 
 // tested
 func (master *Master) readCheckpoint() error {
-	checkpoint, err := os.Open("checkpoint.chk")
+	checkpoint, err := os.Open(filepath.Join(master.MasterDirectory,"checkpoint.chk"))
+	log.Println(checkpoint)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		var pathErr *fs.PathError
+		if !errors.As(err,&pathErr) {
+			log.Println(err)
+			log.Println("os.IsNotExist occurs")
 			return err
 		}
 
-		fp, err := helper.OpenTruncFile("checkpoint.chk")
+		fp, err := helper.OpenTruncFile(filepath.Join(master.MasterDirectory,"checkpoint.chk"))
 		if err != nil {
 			return err
 		}
@@ -606,7 +614,7 @@ func (master *Master) readCheckpoint() error {
 		for range int(totalMappings) {
 			bytesRead, file, chunks, err := master.decodeFileAndChunks(checkPointData, offset)
 			if err != nil {
-				err = os.Truncate("checkpoint.chk", int64(offset))
+				err = os.Truncate(filepath.Join(master.MasterDirectory,"checkpoint.chk"), int64(offset))
 				if err != nil {
 					return err
 				}
@@ -638,11 +646,12 @@ func (master *Master) readCheckpoint() error {
 	return nil
 }
 
+
 // tested
 func (master *Master) buildCheckpoint() error {
 
 	// Create a temporary checkpoint file
-	tempCpFile, err := os.Create("checkpoint.tmp")
+	tempCpFile, err := os.Create(filepath.Join(master.MasterDirectory,"checkpoint.tmp"))
 	if err != nil {
 		// Handle error
 		return err
@@ -683,7 +692,7 @@ func (master *Master) buildCheckpoint() error {
 	}
 
 	// Rename the temporary file to the actual checkpoint file
-	err = os.Rename("checkpoint.tmp", "checkpoint.chk")
+	err = os.Rename(filepath.Join(master.MasterDirectory,"checkpoint.tmp"), filepath.Join(master.MasterDirectory,"checkpoint.chk"))
 	if err != nil {
 		return err
 	}

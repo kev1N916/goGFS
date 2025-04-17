@@ -20,16 +20,27 @@ import (
 // TestChunkServerInitAndMasterHandshake verifies that a chunk server can initialize
 // and successfully complete the handshake process with the master
 func TestChunkServerInitAndMasterHandshake(t *testing.T) {
+
+	TestMasterDirectory:="master"
+	os.RemoveAll(TestMasterDirectory)
+	defer os.RemoveAll(TestMasterDirectory)
+
+	TestDirectory := "chunkServer1"
+	os.RemoveAll(TestDirectory)
+	defer os.RemoveAll(TestDirectory)
+
+	err := os.Mkdir(TestDirectory, 0600)
+	assert.Nil(t, err)
+
 	master, err := master.NewMaster(true)
 	assert.Nil(t, err)
 	assert.NotNil(t, master)
 
 	err = master.Start()
+	assert.Nil(t, err)
 	masterPort := master.Listener.Addr().String()
 
-	assert.Nil(t, err)
-
-	chunkServer := chunkserver.NewChunkServer("chunkServer1", masterPort)
+	chunkServer := chunkserver.NewChunkServer(TestDirectory, masterPort)
 	chunkServer.InTestMode = true
 
 	chunkServerPort, err := chunkServer.Start()
